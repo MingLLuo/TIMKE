@@ -1,0 +1,95 @@
+\section{TIMKE实现相关代码}
+
+
+\begin{listing}[ht]
+\begin{minted}{go}
+var (
+    ErrInvalidKey        = errors.New("invalid key")
+    ErrEncryptionFailed  = errors.New("encryption failed")
+    ErrDecryptionFailed  = errors.New("decryption failed")
+    ErrInvalidCiphertext = errors.New("invalid ciphertext")
+    ErrInvalidMessage    = errors.New("invalid message format")
+    ErrBufferTooShort    = errors.New("buffer too short")
+)
+\end{minted}
+\caption{错误类型定义}
+\label{code:error-types}
+\end{listing}
+
+\begin{listing}[ht]
+\begin{minted}{go}
+if err != nil {
+    s.state = StateFailed
+    return nil, fmt.Errorf("failed to decapsulate KEM1: %w", err)
+}
+\end{minted}
+\caption{错误封装示例}
+\label{code:error-wrapping}
+\end{listing}
+
+\begin{listing}[ht]
+\begin{minted}{go}
+// 输入验证
+if s.ephemeralClientPubKey == nil || s.sharedSecret1 == nil {
+    return nil, errors.New("client hello not processed")
+}
+
+// 状态验证
+if c.state != StateAwaitingServerResponse {
+    return nil, errors.New("client not waiting for server response")
+}
+
+// 参数验证
+if pkS == nil || c1 == nil || k1 == nil {
+    return nil, errors.New("invalid input to H1")
+}
+\end{minted}
+\caption{防御性编程示例}
+\label{code:defensive-programming}
+\end{listing}
+
+\begin{listing}[ht]
+\begin{minted}{go}
+// AESGCM实现SymmetricEncryption接口
+type AESGCM struct {
+    nonceSize int
+    random    io.Reader
+}
+
+// Encrypt使用AES-GCM加密明文
+func (a *AESGCM) Encrypt(key, plaintext []byte) ([]byte, error) {
+    // 标准化密钥长度（通过哈希到合适的AES密钥长度）
+    normalizedKey := a.normalizeKey(key)
+
+    // 创建密码块
+    block, err := aes.NewCipher(normalizedKey)
+    if err != nil {
+        return nil, err
+    }
+
+    // 创建GCM模式
+    aesGCM, err := cipher.NewGCM(block)
+    if err != nil {
+        return nil, err
+    }
+
+    // 生成随机nonce
+    nonce := make([]byte, a.nonceSize)
+    if _, err := io.ReadFull(a.random, nonce); err != nil {
+        return nil, err
+    }
+
+    // 加密数据
+    ciphertext := aesGCM.Seal(nil, nonce, plaintext, nil)
+
+    // 组合nonce和密文
+    result := make([]byte, a.nonceSize+len(ciphertext))
+    copy(result[:a.nonceSize], nonce)
+    copy(result[a.nonceSize:], ciphertext)
+
+    return result, nil
+}
+\end{minted}
+\caption{对称加密实现}
+\label{code:symmetric-encryption}
+\end{listing}

@@ -1,0 +1,29 @@
+\section{MSKE 安全模型简述}
+
+在密码学研究中，安全模型通常指导加密方案的设计，确保它们满足特定安全目标，并提供方案的执行框架。
+
+Fischlin 等人在论文\cite{fischlin_multi-stage_2014}中提出多阶段密钥交换（Multi-Stage Key Exchange，MSKE）的安全模型，参考论文\cite{ideal_lattice_2023}及论文\cite{timke_2024}简要介绍如下：
+
+MSKE 模型下参与者身份集表示为 $\mathcal{U}$，并且每一个 $U\in \mathcal{U}$ 有一个长期公钥 $\mathrm{pk}_{U}$ 和对应的私钥 $\mathrm{sk}_{U}$。 列表 $List_S$ 维护着所有会话信息，并由标签 $label$ 作为会话元组 $T$ 的唯一标识，$T$ = ($label$, $U$, $V$, $role$, $auth$, st$_\text{exec}$, $sID$, $K$, st$_{\text {key}}$, $tested$)。
+
+其中 $U$ 与 $V$ 表示通信双方身份，
+$role$ $\in\{ initiator, responder \}$ 记录会话所有者的角色。 
+$auth$ 标识密钥交换协议的每个阶段的认证模式。
+$\mathrm{st}_{\text{exec}}$[$label$, $i$]$\in$ \{running, accepted, rejected\} 表示在会话 $label$ 中第 $i$ 阶段的状态。 
+sID 表示为针对阶段性的会话标识符，其中 $sID_i$ 表示第 $i$(非0)阶段中的会话标识符。
+$K$ 表示会话 $label$ 在 $i$ 阶段中的阶段会话密钥。 
+st$_\text{Key}$[$label$, $i$] $\in\{\text {fresh, revealed}\}$ 表示在会话 $label$ 中第 $i \neq 0 $ 阶段中会话(临时)密钥的状态。 
+tested 记录会话密钥测试状态，$tested_i = true$ 则说明第 $i$ 阶段下的会话(临时)密钥已完成测试。
+
+在 MSKE 安全模型下, 不允许临时密钥以及内部值(如服务器预共享密钥)泄露。 考虑一个 PPT 的敌手 $\mathcal{A}$，它控制着所有参与方之间的通信, 可以拦截、注入和丢弃消息。
+
+\textbf{攻击手段. }敌手 $\mathcal{A}$ 通过以下查询与协议交互: 
+
+\begin{itemize}
+\setlength\itemsep{-0.3em}
+\item NewSession($U$, $V$, $role$, $auth$): 为 $U$ 创建新的会话，角色为 $role$， 预期伙伴为$V$，身份验证类型 $auth$ $\in \{\text{unauth, unilateral, mutual}\}$
+\item Send($label$, $m$): 发送消息$m$给标签为$label$的会话
+\item Reveal($label$, $i$): 暴露$label$会话中第$i$阶段的会话密钥
+\item Cor($U$): 攻陷用户$U$， 向敌手提供用户$U$长期公钥$\mathrm{pk}_{U}$ 对应的长期私钥，返回$\left(\mathrm{sk}_{U}, \mathrm{pk}_{U}\right)$
+\item TEST($label$, $i$): 测试标签为 $label$ 的会话中第 $i$ 阶段的会话密钥
+\end{itemize}
