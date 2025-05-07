@@ -1,0 +1,20 @@
+\begin{center}
+  {\zihao{-2}\bfseries Design and Implementation of
+  \\ a Multi-stage Key Exchange Protocol}
+  \\ \hspace*{\fill} 
+  \\ \hspace*{\fill} \\
+  \addcontentsline{toc}{section}{\zihao{4} Abstract}
+  \zihao{-2} \bfseries Abstract
+\end{center}
+  \bigskip
+  \begin{spacing}{1.5}
+  \zihao{-4}
+  We present the implementation of a TIghtly secure Multi-stage Key Exchange (TIMKE) protocol based on Key Encapsulation Mechanisms (KEM). The protocol leverages post-quantum primitives to withstand quantum computing attacks, with its Tight Security property ensuring that security guarantees remain consistent regardless of the number of users or sessions. 
+  TIMKE employs a two-stage architecture: the first stage utilizes the server's long-term key to provide authentication and support Zero Round Trip Time (0-RTT) data transmission; the second stage incorporates ephemeral keys to achieve weak forward secrecy. 
+  We implement a lattice-based One-Way Checkable security against Chosen-Ciphertext Attacks(OW-ChCCA) KEM with optimized parameters for deployment on conventional computing platforms, while also integrating Module-Lattice based KEM (ML-KEM) as a high performance alternative. Our implementation adopts a modular architecture that supports flexible configuration of various cryptographic primitives to accommodate different security requirements and performance constraints. 
+  Experimental results indicate that while the OW-ChCCA implementation demands significant computational resources, the ML-KEM based TIMKE variant can complete key exchange operations within milliseconds, demonstrating the protocol's feasibility in practical environments.
+  \end{spacing}
+  \medskip
+  \zihao{-4}
+  \textbf{Keywords:}\ \ Multi-stage key exchange protocols; Post-quantum security; Protocol instantiation
+\newpage

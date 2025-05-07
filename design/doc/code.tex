@@ -1,0 +1,1095 @@
+\section{开发代码}
+
+本章将介绍TIMKE协议实现的核心代码，关注系统的关键组件和实现细节。由于篇幅限制，仅展示最具代表性的代码片段。完整代码已开源于GitHub：\url{https://github.com/MingLLuo/TIMKE/}。
+
+\subsection{后端核心代码}
+
+后端代码主要包括协议核心逻辑、KEM实现、消息处理和状态管理等组件。以下是几个最关键的代码片段：
+
+\subsubsection{KEM接口定义}
+
+KEM接口是整个系统的核心抽象，定义了密钥封装机制的标准操作集：
+
+\begin{minted}[breaklines]{go}
+// pkg/kem/interface.go
+package kem
+
+import (
+    cryptoRand "crypto/rand"
+    "errors"
+    "io"
+)
+
+type Parameters struct {
+    Name   string
+    KeyLen int
+}
+
+type PublicKey interface {
+    Bytes() []byte
+    Algorithm() string
+}
+
+type PrivateKey interface {
+    Bytes() []byte
+    Algorithm() string
+    PublicKey() PublicKey
+}
+
+type KEM interface {
+    // 返回KEM的参数信息
+    Setup() Parameters
+    
+    // 生成密钥对
+    GenerateKeyPair(params Parameters, rand io.Reader) (PublicKey, PrivateKey, error)
+    
+    // 使用公钥封装共享密钥
+    Encapsulate(pk PublicKey, rand io.Reader) (ciphertext []byte, sharedSecret []byte, err error)
+    
+    // 使用私钥解封装共享密钥
+    Decapsulate(sk PrivateKey, ciphertext []byte) ([]byte, error)
+    
+    // 解析二进制格式的公钥
+    ParsePublicKey(data []byte) (PublicKey, error)
+    
+    // 解析二进制格式的私钥
+    ParsePrivateKey(data []byte) (PrivateKey, error)
+}
+
+var DefaultRand = cryptoRand.Reader
+
+var (
+    ErrorKEM = errors.New("kem error")
+    ErrInvalidPublicKey = errors.New("invalid public key")
+    ErrInvalidPrivateKey = errors.New("invalid private key")
+    ErrUnsupportedKEM = errors.New("unsupported KEM type")
+)
+\end{minted}
+
+该接口设计允许协议核心逻辑与具体KEM实现分离，使系统能够无缝切换不同的KEM算法。
+
+\subsubsection{密钥派生函数实现}
+
+密钥派生是协议安全性的关键环节，以下是H1和H2函数的实现：
+
+\begin{minted}[breaklines]{go}
+// pkg/crypto/hash.go
+package crypto
+
+import (
+    "errors"
+    "TIMKE/pkg/crypto/sha3"
+)
+
+type Hash struct {
+    h sha3.State
+}
+
+func NewHash() *Hash {
+    return &Hash{
+        h: sha3.New512(),
+    }
+}
+
+func (h *Hash) Hash(data ...[]byte) ([]byte, error) {
+    h.h.Reset()
+
+    for _, d := range data {
+        if _, err := h.h.Write(d); err != nil {
+            return nil, err
+        }
+    }
+    return h.h.Sum(nil), nil
+}
+
+// H1 派生临时会话密钥: K_tmp = H1(pk_S, C_1, K_1)
+func H1(pkS, c1, k1 []byte) ([]byte, error) {
+    if pkS == nil || c1 == nil || k1 == nil {
+        return nil, errors.New("invalid input to H1")
+    }
+
+    h := NewHash()
+    domain := []byte("TIMKE-H1")
+    return h.Hash(domain, pkS, c1, k1)
+}
+
+// H2 派生主会话密钥: K_main = H2(pk_S, epk_C, C_1, C_2, K_1, K_2)
+func H2(pkS, epkC, c1, c2, k1, k2 []byte) ([]byte, error) {
+    if pkS == nil || epkC == nil || c1 == nil || c2 == nil || k1 == nil || k2 == nil {
+        return nil, errors.New("invalid input to H2")
+    }
+
+    h := NewHash()
+    domain := []byte("TIMKE-H2")
+    return h.Hash(domain, pkS, epkC, c1, c2, k1, k2)
+}
+\end{minted}
+
+这些函数使用SHA3-512哈希函数，并通过域分隔标识（"TIMKE-H1"和"TIMKE-H2"）确保不同上下文的哈希值不会冲突。
+
+\subsubsection{客户端实现}
+
+客户端负责启动密钥交换流程，生成ClientHello消息并处理服务器响应：
+
+\begin{minted}[breaklines]{go}
+// pkg/protocol/client.go
+package protocol
+
+import (
+    "errors"
+    "fmt"
+    "io"
+
+    "TIMKE/pkg/crypto"
+    "TIMKE/pkg/kem"
+)
+
+type Client struct {
+    config  *Config
+    state   SessionState
+    options *SessionOptions
+    rand    io.Reader
+
+    ephemeralPublicKey  kem.PublicKey
+    ephemeralPrivateKey kem.PrivateKey
+    ciphertext1         []byte
+    sharedSecret1       []byte // K_1
+    tempKey             []byte // K_tmp
+    ciphertext2         []byte
+    sharedSecret2       []byte // K_2
+    sessionKey          []byte // K_main
+}
+
+func NewClient(config *Config, options *SessionOptions) (*Client, error) {
+    if config == nil {
+        config = DefaultConfig()
+    }
+
+    if options == nil || options.ServerPublicKey == nil {
+        return nil, errors.New("server public key is required")
+    }
+
+    return &Client{
+        config:  config,
+        state:   StateInitial,
+        options: options,
+        rand:    kem.DefaultRand,
+    }, nil
+}
+
+func (c *Client) GenerateClientHello(zeroRTTData []byte) (*ClientHello, error) {
+    if c.state != StateInitial {
+        return nil, errors.New("client not in initial state")
+    }
+
+    // 1. 生成临时密钥对
+    params := c.config.KEM2.Setup()
+    epk, esk, err := c.config.KEM2.GenerateKeyPair(params, c.rand)
+    if err != nil {
+        c.state = StateFailed
+        return nil, fmt.Errorf("failed to generate ephemeral key pair: %w", err)
+    }
+    c.ephemeralPublicKey = epk
+    c.ephemeralPrivateKey = esk
+
+    // 2. 使用服务器公钥封装KEM1
+    c.ciphertext1, c.sharedSecret1, err = c.config.KEM1.Encapsulate(c.options.ServerPublicKey, c.rand)
+    if err != nil {
+        c.state = StateFailed
+        return nil, fmt.Errorf("failed to encapsulate KEM1: %w", err)
+    }
+
+    // 3. 派生临时会话密钥: K_tmp = H1(server_pk, C₁, K_1)
+    c.tempKey, err = crypto.H1(
+        c.options.ServerPublicKey.Bytes(),
+        c.ciphertext1,
+        c.sharedSecret1,
+    )
+    if err != nil {
+        c.state = StateFailed
+        return nil, fmt.Errorf("failed to derive temp key: %w", err)
+    }
+
+    // 4. 加密0-RTT数据
+    var encryptedPayload []byte
+    if zeroRTTData != nil {
+        encryptedPayload, err = c.config.SymmetricEncryption.Encrypt(c.tempKey, zeroRTTData)
+        if err != nil {
+            c.state = StateFailed
+            return nil, fmt.Errorf("failed to encrypt 0-RTT data: %w", err)
+        }
+    }
+
+    // 5. 构造ClientHello消息
+    clientHello := &ClientHello{
+        EphemeralPublicKey: c.ephemeralPublicKey.Bytes(),
+        Ciphertext1:        c.ciphertext1,
+        EncryptedPayload:   encryptedPayload,
+        KEM1Type:           c.config.KEM1.Setup().Name,
+        KEM2Type:           c.config.KEM2.Setup().Name,
+    }
+
+    c.state = StateAwaitingServerResponse
+    return clientHello, nil
+}
+
+func (c *Client) ProcessServerResponse(response *ServerResponse) ([]byte, error) {
+    if c.state != StateAwaitingServerResponse {
+        return nil, errors.New("client not waiting for server response")
+    }
+
+    if response == nil {
+        c.state = StateFailed
+        return nil, errors.New("nil server response")
+    }
+
+    // 处理服务器响应，解封装KEM2密文
+    c.ciphertext2 = response.Ciphertext2
+    sharedSecret2, err := c.config.KEM2.Decapsulate(c.ephemeralPrivateKey, c.ciphertext2)
+    if err != nil {
+        c.state = StateFailed
+        return nil, fmt.Errorf("failed to decapsulate KEM2: %w", err)
+    }
+    c.sharedSecret2 = sharedSecret2
+
+    // 派生主会话密钥
+    c.sessionKey, err = crypto.H2(
+        c.options.ServerPublicKey.Bytes(),
+        c.ephemeralPublicKey.Bytes(),
+        c.ciphertext1,
+        c.ciphertext2,
+        c.sharedSecret1,
+        c.sharedSecret2,
+    )
+    if err != nil {
+        c.state = StateFailed
+        return nil, fmt.Errorf("failed to derive session key: %w", err)
+    }
+
+    // 解密服务器有效载荷（如果有）
+    var plaintext []byte
+    if len(response.EncryptedPayload) > 0 {
+        plaintext, err = c.config.SymmetricEncryption.Decrypt(c.sessionKey, response.EncryptedPayload)
+        if err != nil {
+            c.state = StateFailed
+            return nil, fmt.Errorf("failed to decrypt server payload: %w", err)
+        }
+    }
+
+    c.state = StateEstablished
+    return plaintext, nil
+}
+
+// 其他方法...
+\end{minted}
+
+客户端实现了协议的两个阶段：生成ClientHello消息（包含临时密钥生成、KEM1封装和0-RTT数据加密）和处理服务器响应（包括KEM2解封装和主会话密钥派生）。
+
+\subsubsection{服务器实现}
+
+服务器负责处理客户端请求，验证身份并建立共享密钥：
+
+\begin{minted}[breaklines]{go}
+// pkg/protocol/server.go
+package protocol
+
+import (
+    "errors"
+    "fmt"
+    "io"
+
+    "TIMKE/pkg/crypto"
+    "TIMKE/pkg/kem"
+)
+
+type Server struct {
+    config  *Config
+    state   SessionState
+    options *SessionOptions
+    rand    io.Reader
+
+    ephemeralClientPubKey kem.PublicKey
+    ciphertext1           []byte
+    sharedSecret1         []byte // K_1
+    tempKey               []byte // K_tmp
+    ciphertext2           []byte
+    sharedSecret2         []byte // K_2
+    sessionKey            []byte // K_main
+
+    dynamicKEM1 kem.KEM
+    dynamicKEM2 kem.KEM
+}
+
+func NewServer(config *Config, options *SessionOptions) (*Server, error) {
+    if config == nil {
+        config = DefaultConfig()
+    }
+
+    if options == nil || options.ServerPrivateKey == nil {
+        return nil, errors.New("server private key is required")
+    }
+
+    return &Server{
+        config:  config,
+        state:   StateInitial,
+        options: options,
+        rand:    kem.DefaultRand,
+    }, nil
+}
+
+func (s *Server) ProcessClientHello(clientHello *ClientHello) ([]byte, error) {
+    if s.state != StateInitial {
+        return nil, errors.New("server not in initial state")
+    }
+
+    if clientHello == nil {
+        s.state = StateFailed
+        return nil, errors.New("nil client hello")
+    }
+
+    // 处理KEM类型协商（如果提供）
+    var err error
+    if clientHello.KEM1Type != "" && clientHello.KEM2Type != "" {
+        s.dynamicKEM1, err = SelectKEM(clientHello.KEM1Type)
+        if err != nil {
+            s.dynamicKEM1 = DefaultKEM1()
+        }
+
+        s.dynamicKEM2, err = SelectKEM(clientHello.KEM2Type)
+        if err != nil {
+            s.dynamicKEM2 = DefaultKEM2()
+        }
+    } else {
+        s.dynamicKEM1 = DefaultKEM1()
+        s.dynamicKEM2 = DefaultKEM2()
+    }
+
+    // 1. 解析客户端临时公钥
+    s.ephemeralClientPubKey, err = s.dynamicKEM2.ParsePublicKey(clientHello.EphemeralPublicKey)
+    if err != nil {
+        s.state = StateFailed
+        return nil, fmt.Errorf("failed to parse ephemeral public key: %w", err)
+    }
+
+    s.ciphertext1 = clientHello.Ciphertext1
+
+    // 2. 使用服务器私钥解封装KEM1密文
+    s.sharedSecret1, err = s.dynamicKEM1.Decapsulate(s.options.ServerPrivateKey, s.ciphertext1)
+    if err != nil {
+        s.state = StateFailed
+        return nil, fmt.Errorf("failed to decapsulate KEM1: %w", err)
+    }
+
+    // 3. 派生临时会话密钥
+    serverPubKey := s.options.ServerPrivateKey.PublicKey()
+    s.tempKey, err = crypto.H1(
+        serverPubKey.Bytes(),
+        s.ciphertext1,
+        s.sharedSecret1,
+    )
+    if err != nil {
+        s.state = StateFailed
+        return nil, fmt.Errorf("failed to derive temp key: %w", err)
+    }
+
+    // 4. 解密0-RTT数据（如果有）
+    var zeroRTTData []byte
+    if len(clientHello.EncryptedPayload) > 0 {
+        zeroRTTData, err = s.config.SymmetricEncryption.Decrypt(s.tempKey, clientHello.EncryptedPayload)
+        if err != nil {
+            s.state = StateFailed
+            return nil, fmt.Errorf("failed to decrypt 0-RTT data: %w", err)
+        }
+    }
+
+    return zeroRTTData, nil
+}
+
+func (s *Server) GenerateServerResponse(payload []byte) (*ServerResponse, error) {
+    if s.ephemeralClientPubKey == nil || s.sharedSecret1 == nil {
+        return nil, errors.New("client hello not processed")
+    }
+
+    // 1. 使用客户端临时公钥封装KEM2
+    var err error
+    s.ciphertext2, s.sharedSecret2, err = s.dynamicKEM2.Encapsulate(s.ephemeralClientPubKey, s.rand)
+    if err != nil {
+        s.state = StateFailed
+        return nil, fmt.Errorf("failed to encapsulate KEM2: %w", err)
+    }
+
+    // 2. 派生主会话密钥
+    serverPubKey := s.options.ServerPrivateKey.PublicKey()
+    s.sessionKey, err = crypto.H2(
+        serverPubKey.Bytes(),
+        s.ephemeralClientPubKey.Bytes(),
+        s.ciphertext1,
+        s.ciphertext2,
+        s.sharedSecret1,
+        s.sharedSecret2,
+    )
+    if err != nil {
+        s.state = StateFailed
+        return nil, fmt.Errorf("failed to derive session key: %w", err)
+    }
+
+    // 3. 加密有效载荷（如果有）
+    var encryptedPayload []byte
+    if payload != nil {
+        encryptedPayload, err = s.config.SymmetricEncryption.Encrypt(s.sessionKey, payload)
+        if err != nil {
+            s.state = StateFailed
+            return nil, fmt.Errorf("failed to encrypt payload: %w", err)
+        }
+    }
+
+    // 4. 构造服务器响应
+    serverResponse := &ServerResponse{
+        Ciphertext2:      s.ciphertext2,
+        EncryptedPayload: encryptedPayload,
+    }
+
+    s.state = StateEstablished
+    return serverResponse, nil
+}
+
+// 其他方法...
+\end{minted}
+
+服务器实现了协议的两个主要功能：处理ClientHello消息（包括解析临时公钥、解封装KEM1密文和解密0-RTT数据）和生成ServerResponse（包括KEM2封装和有效载荷加密）。
+
+\subsubsection{消息序列化}
+
+协议消息的序列化是确保通信正确性的关键组件：
+
+\begin{minted}[breaklines]{go}
+// pkg/protocol/serializer.go
+package protocol
+
+import (
+    "encoding/binary"
+    "errors"
+    "fmt"
+)
+
+// 消息结构定义
+type ClientHello struct {
+    EphemeralPublicKey []byte
+    Ciphertext1        []byte
+    EncryptedPayload   []byte
+    KEM1Type           string
+    KEM2Type           string
+}
+
+type ServerResponse struct {
+    Ciphertext2      []byte
+    EncryptedPayload []byte
+}
+
+// DefaultSerializer 实现消息序列化接口
+type DefaultSerializer struct{}
+
+// MarshalClientHello 序列化ClientHello消息
+func (s *DefaultSerializer) MarshalClientHello(ch *ClientHello) ([]byte, error) {
+    if ch == nil {
+        return nil, errors.New("cannot marshal nil ClientHello")
+    }
+
+    // 预分配合理大小的缓冲区
+    estimatedSize := 4 + len(ch.EphemeralPublicKey) +
+        4 + len(ch.Ciphertext1) +
+        4 + len(ch.EncryptedPayload) +
+        4 + len([]byte(ch.KEM1Type)) +
+        4 + len([]byte(ch.KEM2Type))
+
+    result := make([]byte, 0, estimatedSize)
+
+    // 使用长度前缀编码每个字段
+    result = writeLengthPrefixedBytes(result, ch.EphemeralPublicKey)
+    result = writeLengthPrefixedBytes(result, ch.Ciphertext1)
+    result = writeLengthPrefixedBytes(result, ch.EncryptedPayload)
+    result = writeLengthPrefixedBytes(result, []byte(ch.KEM1Type))
+    result = writeLengthPrefixedBytes(result, []byte(ch.KEM2Type))
+
+    return result, nil
+}
+
+// UnmarshalClientHello 反序列化ClientHello消息
+func (s *DefaultSerializer) UnmarshalClientHello(data []byte) (*ClientHello, error) {
+    if len(data) < 2 {
+        return nil, ErrInvalidMessage
+    }
+
+    ch := &ClientHello{}
+    offset := 0
+    var err error
+
+    // 读取各字段
+    ch.EphemeralPublicKey, offset, err = readLengthPrefixedBytes(data, offset)
+    if err != nil {
+        return nil, err
+    }
+
+    ch.Ciphertext1, offset, err = readLengthPrefixedBytes(data, offset)
+    if err != nil {
+        return nil, err
+    }
+
+    ch.EncryptedPayload, offset, err = readLengthPrefixedBytes(data, offset)
+    if err != nil {
+        return nil, err
+    }
+
+    kem1TypeBytes, offset, err := readLengthPrefixedBytes(data, offset)
+    if err != nil {
+        return nil, err
+    }
+    ch.KEM1Type = string(kem1TypeBytes)
+
+    kem2TypeBytes, offset, err := readLengthPrefixedBytes(data, offset)
+    if err != nil {
+        return nil, err
+    }
+    ch.KEM2Type = string(kem2TypeBytes)
+
+    // 检查是否已读取全部数据
+    if offset != len(data) {
+        return ch, errors.New("extra data after message")
+    }
+
+    return ch, nil
+}
+
+// 辅助函数
+func readLengthPrefixedBytes(data []byte, offset int) ([]byte, int, error) {
+    // 检查是否可以读取长度字段（4字节）
+    if offset+4 > len(data) {
+        return nil, offset, ErrBufferTooShort
+    }
+
+    // 读取长度
+    length := binary.BigEndian.Uint32(data[offset:])
+    offset += 4
+
+    // 检查是否可以读取数据
+    if offset+int(length) > len(data) {
+        return nil, offset, ErrBufferTooShort
+    }
+
+    // 提取数据
+    result := make([]byte, length)
+    copy(result, data[offset:offset+int(length)])
+    offset += int(length)
+
+    return result, offset, nil
+}
+
+func writeLengthPrefixedBytes(result []byte, data []byte) []byte {
+    // 分配4字节存储长度
+    lengthBytes := make([]byte, 4)
+    binary.BigEndian.PutUint32(lengthBytes, uint32(len(data)))
+
+    // 追加长度和数据
+    result = append(result, lengthBytes...)
+    result = append(result, data...)
+
+    return result
+}
+
+// 其他序列化方法...
+\end{minted}
+消息序列化代码定义了ClientHello和ServerResponse消息的格式，并提供了序列化和反序列化方法，使用长度前缀编码确保消息的正确解析。
+
+\subsection{前端核心代码}
+
+TIMKE协议实现主要为命令行应用，包含客户端和服务器两个前端程序，以及演示脚本。
+
+\subsubsection{客户端程序}
+
+客户端程序提供命令行接口，支持与服务器建立TIMKE会话：
+
+\begin{minted}[breaklines]{go}
+// cmd/client/main.go
+package main
+
+import (
+    "bufio"
+    "encoding/binary"
+    "encoding/hex"
+    "flag"
+    "fmt"
+    "io"
+    "log"
+    "net"
+    "os"
+    "strings"
+    "time"
+
+    "TIMKE/pkg/kem"
+    "TIMKE/pkg/protocol"
+)
+
+// 颜色常量定义
+const (
+    colorReset  = "\033[0m"
+    colorRed    = "\033[31m"
+    colorGreen  = "\033[32m"
+    colorYellow = "\033[33m"
+    colorBlue   = "\033[34m"
+    colorPurple = "\033[35m"
+    colorCyan   = "\033[36m"
+)
+
+func main() {
+    // 命令行参数定义
+    var (
+        host          = flag.String("host", "localhost", "服务器主机名或IP")
+        port          = flag.Int("port", 8443, "服务器端口")
+        serverPubKey  = flag.String("server-key", "", "服务器公钥（十六进制格式）")
+        serverKeyFile = flag.String("server-key-file", "", "包含服务器公钥的文件路径")
+        kem1Type      = flag.String("kem1", "ML-KEM-768", "服务器密钥KEM类型")
+        kem2Type      = flag.String("kem2", "ML-KEM-768", "临时密钥KEM类型")
+        zeroRTTMsg    = flag.String("0rtt", "Hello from TIMKE client! This is 0-RTT data.", "0-RTT消息（空字符串禁用）")
+        interactive   = flag.Bool("i", false, "交互模式（密钥交换后发送/接收消息）")
+        verbose       = flag.Bool("v", false, "显示详细输出")
+    )
+    flag.Parse()
+
+    logger := log.New(os.Stdout, "", 0)
+
+    // 打印标题
+    printBanner(logger)
+
+    // 列出可用的KEM算法
+    logger.Printf("%s可用的KEM算法:%s\n", colorYellow, colorReset)
+    for _, k := range kem.ListKEMs() {
+        logger.Printf("  - %s\n", k)
+    }
+    logger.Println()
+
+    // 获取服务器公钥
+    var serverPublicKeyBytes []byte
+    var err error
+
+    if *serverKeyFile != "" {
+        // 从文件加载
+        serverPublicKeyBytes, err = os.ReadFile(*serverKeyFile)
+        if err != nil {
+            logger.Fatalf("%s读取服务器密钥文件错误: %s%s\n", colorRed, err, colorReset)
+        }
+    } else if *serverPubKey != "" {
+        // 解析十六进制字符串
+        serverPublicKeyBytes, err = hex.DecodeString(*serverPubKey)
+        if err != nil {
+            logger.Fatalf("%s解码服务器公钥错误: %s%s\n", colorRed, err, colorReset)
+        }
+    } else {
+        logger.Fatalf("%s错误: 必须提供--server-key或--server-key-file参数%s\n", colorRed, colorReset)
+    }
+
+    // 获取KEM实例
+    kem1, err := kem.GetKEM(*kem1Type)
+    if err != nil {
+        logger.Fatalf("%s错误: KEM1类型'%s'未找到: %s%s\n", colorRed, *kem1Type, err, colorReset)
+    }
+    kem2, err := kem.GetKEM(*kem2Type)
+    if err != nil {
+        logger.Fatalf("%s错误: KEM2类型'%s'未找到: %s%s\n", colorRed, *kem2Type, err, colorReset)
+    }
+
+    // 解析服务器公钥
+    serverPublicKey, err := kem1.ParsePublicKey(serverPublicKeyBytes)
+    if err != nil {
+        logger.Fatalf("%s解析服务器公钥错误: %s%s\n", colorRed, err, colorReset)
+    }
+
+    logger.Printf("%s使用服务器密钥: %s%s\n", colorGreen, serverPublicKey.Algorithm(), colorReset)
+
+    // 创建客户端配置
+    config := &protocol.Config{
+        KEM1:                kem1,
+        KEM2:                kem2,
+        SymmetricEncryption: protocol.DefaultConfig().SymmetricEncryption,
+    }
+
+    // 创建客户端选项
+    options := protocol.NewSessionOptions().WithServerPublicKey(serverPublicKey)
+
+    // 创建客户端
+    client, err := protocol.NewClient(config, options)
+    if err != nil {
+        logger.Fatalf("%s创建客户端错误: %s%s\n", colorRed, err, colorReset)
+    }
+
+    // 连接服务器
+    serverAddr := fmt.Sprintf("%s:%d", *host, *port)
+    logger.Printf("%s连接到%s...%s\n", colorYellow, serverAddr, colorReset)
+    conn, err := net.Dial("tcp", serverAddr)
+    if err != nil {
+        logger.Fatalf("%s连接服务器错误: %s%s\n", colorRed, err, colorReset)
+    }
+    defer conn.Close()
+    logger.Printf("%s已连接到%s%s\n", colorGreen, serverAddr, colorReset)
+
+    // 准备0-RTT数据
+    var zeroRTTData []byte
+    if *zeroRTTMsg != "" {
+        zeroRTTData = []byte(*zeroRTTMsg)
+    }
+
+    // 开始协议 - 生成ClientHello
+    startTime := time.Now()
+    logger.Printf("%s生成ClientHello...%s\n", colorCyan, colorReset)
+    clientHello, err := client.GenerateClientHello(zeroRTTData)
+    if err != nil {
+        logger.Fatalf("%s生成ClientHello错误: %s%s\n", colorRed, err, colorReset)
+    }
+
+    // 协议可视化 - 第一阶段
+    if *verbose {
+        logger.Printf("%s---------- 协议第一阶段 ----------%s\n", colorPurple, colorReset)
+        logger.Printf("KEM1类型: %s\n", clientHello.KEM1Type)
+        logger.Printf("KEM2类型: %s\n", clientHello.KEM2Type)
+        logger.Printf("临时公钥长度: %d字节\n", len(clientHello.EphemeralPublicKey))
+        logger.Printf("密文1长度: %d字节\n", len(clientHello.Ciphertext1))
+        if zeroRTTData != nil {
+            logger.Printf("0-RTT数据: %s\n", *zeroRTTMsg)
+            logger.Printf("加密载荷长度: %d字节\n", len(clientHello.EncryptedPayload))
+        } else {
+            logger.Printf("无0-RTT数据\n")
+        }
+    }
+
+    // 序列化并发送ClientHello
+    serializer := &protocol.DefaultSerializer{}
+    clientHelloBytes, err := serializer.MarshalClientHello(clientHello)
+    if err != nil {
+        logger.Fatalf("%s序列化ClientHello错误: %s%s\n", colorRed, err, colorReset)
+    }
+
+    // 首先发送长度（4字节，32位）
+    lenBuf := make([]byte, 4)
+    binary.BigEndian.PutUint32(lenBuf, uint32(len(clientHelloBytes)))
+    if _, err := conn.Write(lenBuf); err != nil {
+        logger.Fatalf("%s发送ClientHello长度错误: %s%s\n", colorRed, err, colorReset)
+    }
+
+    // 然后发送实际的ClientHello
+    if _, err := conn.Write(clientHelloBytes); err != nil {
+        logger.Fatalf("%s发送ClientHello错误: %s%s\n", colorRed, err, colorReset)
+    }
+
+    logger.Printf("%s已发送ClientHello (%d字节)%s\n", colorGreen, len(clientHelloBytes), colorReset)
+    if zeroRTTData != nil {
+        logger.Printf("%s已发送0-RTT数据: \"%s\"%s\n", colorPurple, *zeroRTTMsg, colorReset)
+    }
+
+    // 读取服务器响应
+    logger.Printf("%s等待服务器响应...%s\n", colorCyan, colorReset)
+
+    // 读取消息长度
+    if _, err := io.ReadFull(conn, lenBuf); err != nil {
+        logger.Fatalf("%s读取服务器响应长度错误: %s%s\n", colorRed, err, colorReset)
+    }
+
+    messageLen := int(binary.BigEndian.Uint32(lenBuf))
+    messageBuf := make([]byte, messageLen)
+    if _, err := io.ReadFull(conn, messageBuf); err != nil {
+        logger.Fatalf("%s读取服务器响应错误: %s%s\n", colorRed, err, colorReset)
+    }
+
+    // 反序列化服务器响应
+    serverResponse, err := serializer.UnmarshalServerResponse(messageBuf)
+    if err != nil {
+        logger.Fatalf("%s反序列化服务器响应错误: %s%s\n", colorRed, err, colorReset)
+    }
+
+    logger.Printf("%s收到服务器响应 (%d字节)%s\n", colorGreen, len(messageBuf), colorReset)
+
+    // 协议可视化 - 第二阶段
+    if *verbose {
+        logger.Printf("%s---------- 协议第二阶段 ----------%s\n", colorPurple, colorReset)
+        logger.Printf("密文2长度: %d字节\n", len(serverResponse.Ciphertext2))
+        logger.Printf("加密载荷长度: %d字节\n", len(serverResponse.EncryptedPayload))
+    }
+
+    // 处理服务器响应
+    serverData, err := client.ProcessServerResponse(serverResponse)
+    if err != nil {
+        logger.Fatalf("%s处理服务器响应错误: %s%s\n", colorRed, err, colorReset)
+    }
+
+    elapsedTime := time.Since(startTime)
+    sessionKey := client.GetSessionKey()
+
+    // 会话已建立!
+    logger.Printf("%s会话已建立! 协议完成时间: %v%s\n", colorGreen, elapsedTime, colorReset)
+    if *verbose && len(sessionKey) > 0 {
+        logger.Printf("%s会话密钥(前8字节): %x%s\n", colorPurple, sessionKey[:min(8, len(sessionKey))], colorReset)
+    }
+
+    // 显示服务器数据
+    if len(serverData) > 0 {
+        logger.Printf("%s服务器数据: %s%s\n", colorPurple, string(serverData), colorReset)
+    }
+
+    // 协议完成!
+    logger.Printf("%sTIMKE协议成功完成!%s\n", colorBlue, colorReset)
+
+    // 交互模式
+    if *interactive {
+        // 实现交互式消息收发...
+    }
+}
+
+// 其他辅助函数...
+\end{minted}
+
+客户端程序提供了用户友好的命令行接口，支持多种参数配置，并通过颜色编码输出增强用户体验。程序实现了完整的TIMKE协议交互流程，包括建立连接、发送ClientHello、处理服务器响应和显示会话状态。
+
+\subsubsection{演示脚本}
+
+演示脚本提供了用户友好的交互式界面，整合了协议的所有功能：
+
+\begin{minted}[breaklines]{bash}
+#!/bin/bash
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# 默认设置
+KEM1_TYPE="ML-KEM-768"
+KEM2_TYPE="ML-KEM-768"
+PORT=8443
+TEMP_DIR="$(pwd)/.temp"
+SERVER_KEY="${TEMP_DIR}/server-key.pem"
+CLIENT_ZERO_RTT="Hello from TIMKE client! This is 0-RTT data."
+SERVER_PID_FILE="${TEMP_DIR}/server.pid"
+
+# 标题
+...
+
+# 解析命令行参数
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --kem1)
+            KEM1_TYPE="$2"
+            shift 2
+            ;;
+        --kem2)
+            KEM2_TYPE="$2"
+            shift 2
+            ;;
+        --port)
+            PORT="$2"
+            shift 2
+            ;;
+        --help)
+            print_banner
+            echo -e "${GREEN}TIMKE演示运行脚本${NC}"
+            echo -e "用法: $0 [选项]"
+            echo -e ""
+            echo -e "选项:"
+            echo -e "  --kem1 TYPE     要使用的KEM1算法 (默认: ML-KEM-768)"
+            echo -e "  --kem2 TYPE     要使用的KEM2算法 (默认: ML-KEM-768)"
+            echo -e "  --port PORT     服务器端口 (默认: 8443)"
+            echo -e "  --help          显示帮助信息"
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}未知选项: $1${NC}"
+            exit 1
+            ;;
+    esac
+done
+
+# 退出时清理
+cleanup() {
+    echo -e "${YELLOW}清理临时文件...${NC}"
+    
+    # 检查服务器是否运行，如果是则停止
+    if [ -f "${SERVER_PID_FILE}" ]; then
+        SERVER_PID=$(cat "${SERVER_PID_FILE}")
+        if kill -0 "${SERVER_PID}" 2>/dev/null; then
+            echo -e "${YELLOW}停止TIMKE服务器 (PID: ${SERVER_PID})...${NC}"
+            kill "${SERVER_PID}" 2>/dev/null || true
+        fi
+    fi
+}
+
+# 生成服务器密钥
+generate_keys() {
+    echo -e "${YELLOW}使用kem1.(${KEM1_TYPE})生成服务器密钥...${NC}"
+
+    # 移动到项目根目录
+    cd "$(dirname "$0")/.." || exit 1
+    # 检查临时目录是否存在
+    if [[ ! -d "${TEMP_DIR}" ]]; then
+        mkdir -p "${TEMP_DIR}"
+    fi
+
+    go run ./cmd/server/main.go --genkey "${SERVER_KEY}" --kem1 "${KEM1_TYPE}" --kem2 "${KEM2_TYPE}"
+    
+    if [[ ! -f "${SERVER_KEY}" || ! -f "${SERVER_KEY}.pub" ]]; then
+        echo -e "${RED}生成服务器密钥失败.${NC}"
+        return 1
+    fi
+    
+    echo -e "${GREEN}服务器密钥已生成:${NC}"
+    echo -e "  私钥: ${SERVER_KEY}"
+    echo -e "  公钥: ${SERVER_KEY}.pub"
+    echo -e "\n"
+    
+    return 0
+}
+
+# 启动服务器
+start_server() {
+    # 移动到项目根目录
+    cd "$(dirname "$0")/.." || exit 1
+
+    # 检查临时目录是否存在
+    if [[ ! -d "${TEMP_DIR}" ]]; then
+        mkdir -p "${TEMP_DIR}"
+    fi
+
+    # 检查服务器是否已经运行
+    if [ -f "${SERVER_PID_FILE}" ]; then
+        local old_pid=$(cat "${SERVER_PID_FILE}")
+        if kill -0 "${old_pid}" 2>/dev/null; then
+            echo -e "${YELLOW}服务器已在运行中，PID: ${old_pid}${NC}"
+            return 0
+        fi
+    fi
+
+    # 检查密钥是否存在
+    if [[ ! -f "${SERVER_KEY}" ]]; then
+        echo -e "${RED}未找到服务器密钥。请先生成密钥.${NC}"
+        return 1
+    fi
+
+    echo -e "${YELLOW}在端口 ${PORT} 上启动TIMKE服务器...${NC}"
+    
+    # 后台启动服务器
+    TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+    echo "TIMKE服务器日志文件" > "${TEMP_DIR}/server.log"
+    echo "时间戳: ${TIMESTAMP}" >> "${TEMP_DIR}/server.log"
+    go run ./cmd/server/main.go --key "${SERVER_KEY}" --port "${PORT}" --kem1 "${KEM1_TYPE}" --kem2 "${KEM2_TYPE}" --v > "${TEMP_DIR}/server.log" 2>&1 &
+    local server_pid=$!
+    
+    # 保存PID用于后续清理
+    echo "${server_pid}" > "${SERVER_PID_FILE}"
+    
+    # 等待片刻让服务器启动
+    sleep 2
+    
+    # 检查服务器是否运行
+    if ! kill -0 "${server_pid}" 2>/dev/null; then
+        echo -e "${RED}服务器启动失败。查看服务器日志: ${TEMP_DIR}/server.log${NC}"
+        cat "${TEMP_DIR}/server.log"
+        return 1
+    fi
+    
+    echo -e "${GREEN}服务器已启动，PID: ${server_pid}${NC}"
+    echo -e "${BLUE}服务器日志路径: ${TEMP_DIR}/server.log${NC}"
+    echo -e "${YELLOW}服务器日志尾部:${NC}"
+    tail -n 10 "${TEMP_DIR}/server.log"
+    echo
+    
+    return 0
+}
+
+# 其他功能实现...
+
+# 注册清理函数
+trap cleanup EXIT
+
+# 主菜单
+show_menu() {
+    echo -e "${GREEN}TIMKE演示选项:${NC}"
+    echo -e "  ${YELLOW}1)${NC} 生成服务器密钥"
+    echo -e "  ${YELLOW}2)${NC} 启动服务器"
+    echo -e "  ${YELLOW}3)${NC} 运行携带0-RTT数据的客户端"
+    echo -e "  ${YELLOW}4)${NC} 运行交互式客户端"
+    echo -e "  ${YELLOW}5)${NC} 显示服务器日志"
+    echo -e "  ${YELLOW}6)${NC} 停止服务器"
+    echo -e "  ${YELLOW}7)${NC} 退出"
+    echo
+    echo -e "${BLUE}使用KEM1: ${KEM1_TYPE}, KEM2: ${KEM2_TYPE}, 端口: ${PORT}${NC}"
+    echo
+    
+    # 检查服务器状态
+    if [ -f "${SERVER_PID_FILE}" ]; then
+        local pid=$(cat "${SERVER_PID_FILE}")
+        if kill -0 "${pid}" 2>/dev/null; then
+            echo -e "${GREEN}服务器正在运行，PID: ${pid}${NC}"
+        else
+            echo -e "${RED}服务器未运行（过期的PID文件）${NC}"
+            rm -f "${SERVER_PID_FILE}"
+        fi
+    else
+        echo -e "${YELLOW}服务器未运行${NC}"
+    fi
+    echo
+}
+
+# 主循环
+print_banner
+
+while true; do
+    show_menu
+    echo -n "输入您的选择 [1-7]: "
+    read -r choice
+    
+    case $choice in
+        1)
+            generate_keys
+            echo -e "${YELLOW}按Enter继续...${NC}"
+            read -r
+            ;;
+        2)
+            start_server
+            echo -e "${YELLOW}按Enter继续...${NC}"
+            read -r
+            ;;
+        3)
+            run_client_0rtt
+            echo -e "${YELLOW}按Enter继续...${NC}"
+            read -r
+            ;;
+        4)
+            run_client_interactive
+            ;;
+        5)
+            show_server_log
+            echo -e "${YELLOW}按Enter继续...${NC}"
+            read -r
+            ;;
+        6)
+            stop_server
+            echo -e "${YELLOW}按Enter继续...${NC}"
+            read -r
+            ;;
+        7)
+            echo -e "${GREEN}退出TIMKE演示.${NC}"
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}无效选择。请输入1到7之间的数字.${NC}"
+            sleep 1
+            ;;
+    esac
+    
+    clear
+    print_banner
+done
+\end{minted}
+
+演示脚本提供了用户友好的菜单界面，集成了服务器密钥生成、服务器启动、客户端连接等所有核心功能，使用户能够轻松体验TIMKE协议的完整流程，是展示系统功能的重要工具。
+
+通过以上代码示例，展示了TIMKE协议实现的核心组件和关键逻辑。完整代码实现了更多功能和优化，可在GitHub代码库中查看。

@@ -1,0 +1,26 @@
+\section{引言}
+
+\subsection{选题背景与意义}
+
+密钥交换协议允许参与方协商建立共享密钥，进而使用安全通道协议为报文交换提供保密性与完整性。认证密钥交换协议在此基础上附加关于身份信息的认证，有效解决传统协议易受中间人攻击的问题。然而，这些协议并未充分考虑现实中复杂的密钥交换。现代网络的背景下，密钥交换和通道建立的两个阶段往往相互交织，参与方通过协商导出最终的密钥，例如 QUIC、 TLS1.3 和 Signal。这种交互过程可由多阶段密钥交换（Multi-stage Key Exchange, MSKE）协议描述。MSKE 协议将整个交互过程划分出多个独立阶段，不同阶段可以采用不同的密钥进行协商与派生，生成的阶段密钥可用于不同的目的，如消息加密、认证或完整性保护等。
+
+美国国家标准与技术研究院（NIST）于2016年启动后量子密码标准化竞赛，以应对量子计算带来的挑战。2022年7月，NIST公布了首批后量子密码标准算法。基于格的密码学（Lattice-based Cryptography）方案在量子计算环境下仍保持较高安全强度，是现代后量子密码学研究的重点方向。目前广泛使用的QUIC、TLS 1.3等网络协议尚未将这类后量子安全算法正式嵌入协议并标准化，突出了研究并实现具有后量子安全特性的MSKE协议的重要意义。
+
+论文\cite{timke_2024}中提出基于密钥封装机制（Key-Encapsulation Mechanism, KEM）的两阶段紧致安全多阶段密钥交换协议（TIghtly secure Multi-stage Key Exchange，记为TIMKE）。TIMKE协议采用两种不同安全性的KEM作为构建基础，第一阶段使用单向可检测选择密文安全KEM提供服务器认证，第二阶段使用单向明文可检测安全KEM建立具有弱前向安全性的会话密钥。TIMKE协议支持零往返时间（Zero Round Trip Time, 0-RTT）数据传输，适用于低延迟通信场景，同时提供后量子安全保障，实现该协议能为后量子安全通讯领域提供解决方案。
+
+\subsection{国内外研究现状和相关工作}
+
+目前，国内外对 MSKE 协议的研究主要集中在协议设计、安全性分析和安全模型构建等方面。Fischlin 等学者\cite{fischlin_multi-stage_2014}提出了一种 MSKE 安全模型，并在此模型基础上对 QUIC 协议的安全性进行了分析与证明。此后，研究者们使用类似方法对多种 MSKE 协议的安全性进行了系统性分析。 Cohn-Gordon 等学者\cite{cohn-gordon_formal_2016}将 MSKE 模型推广至更新的 Signal 协议, 并对 Signal 协议下的密钥协商与密钥派生概率进行了分析； Dowling 等学者\cite{dowling_cryptographic_2020}使用 MSKE 模型来对 TLS 1.3 协议进行安全分析。在他们的研究中，TLS 1.3 握手过程中派生的会话密钥被赋予了多种安全属性标记，包括认证类型（未认证、单边认证或双边认证）、前向安全性保障以及抵抗重放攻击的能力等； Schwabe 等学者\cite{schwabe_post-quantum_2020}提出了首个基于 KEM 的 TLS 协议，在 MSKE 安全模型下证明其通用构造的安全性，同时还提供了一种后量子安全的协议框架。陈霄和王宝成\cite{ideal_lattice_2023}基于MSKE模型提出了一种方案，通过预共享的口令进行认证，并使用 Peikert 误差消除机制结合服务器静态密钥实现多阶段密钥协商，实现了双向认证和二阶会话密钥完美前向保密等特性。
+
+紧致性是密码协议安全性的评估标准之一。安全规约作为面向密码学协议的安全性证明技巧，通过定义敌手能获得的攻击优势，将其与已知的计算性难题联系起来。传统证明的规约损失因子会直接影响实际部署时的安全参数选择，较大的安全损失迫使实现者采用更大的密钥长度和参数，大幅提高计算和通信开销。紧致安全协议能将规约损失控制在可接受范围内，使协议在维持高安全性的同时保持高效运行。业界已经提出多种具有紧致安全性的密钥交换协议。Bader 和 Jager 等人\cite{bader_tightly-secure_2014}构建了首个紧致安全的认证密钥交换协议，其安全性不会随着用户数量或会话数量的增加而降低，并在增强版 Bellare-Rogaway 安全模型中证明了其紧致安全性。针对更复杂的 MSKE 协议，Diemert 和 Jager \cite{davis_concrete_2022}在随机预言模型（Random Oracle, RO）中紧密地将 TLS 1.3 的安全性归约到其密码学组件的多用户安全性，指出通过替换特定组件可获得完全紧致安全的TLS协议，但该方案尚不满足后量子安全要求。
+
+KEM在后量子安全性、高效性、设计简洁性以及与混合加密的兼容性方面优于传统的公钥加密（Public Key Encryption,PKE）。现代加密通常采用混合方法，即用公钥加密短的对称密钥，后使用对称密钥加密长消息，KEM 范式为这种混合加密方式提供了标准框架。 设计和分析安全的 KEM 比设计安全的 PKE 更容易，这也是其被现代密码协议广泛采用的原因之一。
+
+在TIMKE协议相关研究方面，Pan等学者\cite{pan_lattice-based_2023}详细阐述了基于格的单向可检测选择密文安全（One-Way Checkable security against Chosen-Ciphertext Attacks，OW-ChCCA）KEM构造，为紧致安全的密钥交换协议提供了理论基础，但缺乏具体实现与性能分析。
+
+2024 年 8 月，NIST 发布了基于模格的密钥封装（Module-Lattice-Based Key-Encapsulation Mechanism, ML-KEM）标准\cite{nist_mlkem_2024}。该标准的安全性基于模上带误差学习（Module-Learning With Errors, MLWE）问题，这是Regev于2005年提出的带误差学习（Learning With Errors, LWE）问题的扩展。ML-KEM 首先基于MLWE构造公钥加密方案，通过 Fujisaki-Okamoto 变换将其转换为满足“选择密文攻击下的不可区分”（INDistinguishability under adaptive Chosen Ciphertext Attack, IND-CCA2） 的KEM方案，如Google、Cloudflare等公司已在运行实例中部署了基于ML-KEM的混合方案\cite{noauthor_pqc_2025}，兼容传统和后量子安全需求。
+
+\subsection{设计内容与贡献}
+
+通过分析TIMKE协议，将论文\cite{timke_2024}中的构造进行实例化，验证其现实可行性。TIMKE的实现需要调用 OW-ChCCA KEM 实例，现实中并没有对应的实现。基于论文\cite{pan_lattice-based_2023}中的OW-ChCCA KEM构造方案构建出一套OW-ChCCA KEM库，并评估其实际性能。协议实现统一的KEM接口，用户可以通过简单封装嵌入不同KEM实例，比如Golang标准库下的ML-KEM，为协议提供多种安全与性能配置选项。实现构建了一套完整的客户端与服务器演示系统，支持0-RTT数据传输。测试模块提供全面的性能评估框架，分析不同KEM组合在TIMKE协议中的性能。
+

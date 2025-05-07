@@ -1,0 +1,114 @@
+\subsection{核心数据结构与算法}
+\subsubsection{数据结构设计}
+
+OW-ChCCA-KEM的核心数据结构包括公钥、私钥、密文以及支持矩阵运算的其他变量：
+
+\begin{itemize}
+    \item \textbf{公钥结构 (PublicKey)}：
+    \begin{align}
+    pk = (params, \mathbf{A}, \mathbf{u}_0, \mathbf{u}_1)
+    \end{align}
+    其中$params$包含方案参数，$\mathbf{A} \in \mathbb{Z}_q^{n \times m}$是随机矩阵，$\mathbf{u}_0, \mathbf{u}_1 \in \mathbb{Z}_q^{n \times \lambda}$是两个特殊矩阵，分别包含真实数据和随机数据。
+    
+    \item \textbf{私钥结构 (PrivateKey)}：
+    \begin{align}
+    sk = (pk, \mathbf{Z}_b, b)
+    \end{align}
+    其中$pk$是对应的公钥引用，$\mathbf{Z}_b \in \mathbb{Z}_q^{m \times \lambda}$是密钥矩阵，$b \in \{0,1\}$是指示位，决定哪个$\mathbf{u}$矩阵包含真实数据。
+    
+    \item \textbf{密文结构 (Ciphertext)}：
+    \begin{align}
+    ct = (c_0, c_1, \mathbf{x}, \hat{H}_0, \hat{H}_1)
+    \end{align}
+    其中$c_0, c_1$各为$\lambda$比特的密钥材料，$\mathbf{x} \in \mathbb{Z}_q^m$是LWE样本，$\hat{H}_0, \hat{H}_1 \in \mathbb{Z}_q^\lambda$是两个辅助向量。
+    
+    \item \textbf{矩阵与向量类 (Matrix/Vector)}：
+    提供模运算支持的大整数矩阵和向量表示，包含并行算法实现。矩阵类支持加法、乘法、转置等基本运算，向量类支持加法、点积、标量乘法等操作，所有运算都在模$q$下进行。
+\end{itemize}
+
+数据结构通过精心设计的序列化与反序列化机制支持二进制编码，以便网络传输和持久化存储，序列化格式采用紧凑表示以最小化传输开销。需要指出，共享参数在许多 KEM 的实现中都是预先制定好的，不同安全级别下有不同的设置，指定一个理论方案的现实参数需要严谨且持久的分析测试，在尚未确定具体参数前，实现将共享参数作为公钥的一部分，所占空间与其他元素相比可忽略不计。
+
+\subsubsection{核心算法实现}
+
+OW-ChCCA-KEM包含三个核心算法：密钥生成、密钥封装和密文解封装，确保密钥派生的安全性和正确性。
+
+密钥生成算法（Algorithm \ref{alg:key-gen}）负责生成安全的公私钥对。首先创建随机矩阵$\mathbf{A}$并生成密钥矩阵$\mathbf{Z}_b$，随后根据随机选择的比特$b$构建包含真实数据和随机数据的公钥矩阵对$(\mathbf{u}_0, \mathbf{u}_1)$。通过确保攻击者无法判断哪个矩阵包含真实信息，从而保证系统安全性。
+
+\begin{algorithm}
+\caption{OW-ChCCA-KEM密钥生成算法}
+\label{alg:key-gen}
+\begin{algorithmic}[1]
+\Procedure{KeyGen}{$params$}
+    \State 从均匀分布采样矩阵 $\mathbf{A} \stackrel{\$}{\leftarrow} \mathbb{Z}_q^{n \times m}$
+    \State 随机选择比特 $b \stackrel{\$}{\leftarrow} \{0, 1\}$
+    \State 从高斯分布采样矩阵 $\mathbf{Z}_b \leftarrow D_{\mathbb{Z}^{m \times \lambda}, \alpha}$，其中 $\alpha = \sqrt{n}$
+    \State 计算矩阵乘积 $\mathbf{A}\mathbf{Z}_b \in \mathbb{Z}_q^{n \times \lambda}$
+    \If{$b = 1$}
+        \State $\mathbf{u}_1 \gets \mathbf{A}\mathbf{Z}_b$
+        \State 从均匀分布采样 $\mathbf{u}_0 \stackrel{\$}{\leftarrow} \mathbb{Z}_q^{n \times \lambda}$
+    \Else
+        \State $\mathbf{u}_0 \gets \mathbf{A}\mathbf{Z}_b$
+        \State 从均匀分布采样 $\mathbf{u}_1 \stackrel{\$}{\leftarrow} \mathbb{Z}_q^{n \times \lambda}$
+    \EndIf
+    \State 构造公钥 $pk \gets (params, \mathbf{A}, \mathbf{u}_0, \mathbf{u}_1)$
+    \State 构造私钥 $sk \gets (pk, \mathbf{Z}_b, b)$
+    \State \Return $(pk, sk)$
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+密钥封装算法（Algorithm \ref{alg:encap}）由发送方执行，将随机生成的密钥材料封装为密文。首先生成随机种子$r$，通过扩展函数$G$派生出向量$s$、扰动采样参数$\rho$和二元向量$h_0$、$h_1$。基于LWE问题，算法出构造样本$\mathbf{x}$和辅助向量$\hat{H}_0$、$\hat{H}_1$，最终生成密文和共享密钥。
+
+\begin{algorithm}
+\caption{OW-ChCCA-KEM封装算法}
+\label{alg:encap}
+\begin{algorithmic}[1]
+\Procedure{Encaps}{$pk$}
+    \State 生成随机种子 $r \stackrel{\$}{\leftarrow} \{0,1\}^{\lambda}$
+    \State 通过扩展函数计算 $(s, \rho, h_0, h_1) \gets G(r)$
+    \State 使用 $\rho$ 作为种子从高斯分布采样 $\mathbf{e} \leftarrow D_{\mathbb{Z}^m, \alpha'}$，其中 $\alpha' = n^{2.5} \cdot m$
+    \State $\mathbf{x} \gets \mathbf{A}^T\mathbf{s} + \mathbf{e}$
+    \State $\hat{H}_0 \gets \mathbf{u}_0^T\mathbf{s} + h_0 \cdot \lfloor q/2 \rfloor$
+    \State $\hat{H}_1 \gets \mathbf{u}_1^T\mathbf{s} + h_1 \cdot \lfloor q/2 \rfloor$
+    \State $\hat{K}_0 \gets H(\mathbf{x}, \hat{H}_0, h_0)[:{\lambda}]$
+    \State $\hat{K}_1 \gets H(\mathbf{x}, \hat{H}_1, h_1)[:{\lambda}]$
+    \State $c_0 \gets \hat{K}_0 \oplus r$
+    \State $c_1 \gets \hat{K}_1 \oplus r$
+    \State 构造密文 $ct \gets (c_0, c_1, \mathbf{x}, \hat{H}_0, \hat{H}_1)$
+    \State 应用密钥派生函数计算共享密钥 $K \gets \text{KDF}(r)$
+    \State \Return $(ct, K)$
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+密文解封装算法（Algorithm \ref{alg:decap}）由接收方执行，通过私钥验证密文并恢复共享密钥。首先基于私钥中的标志位$b$确定要处理的密文部分，后利用密钥矩阵$\mathbf{Z}_b$进行解码。关键步骤是恢复随机种子$r$并对密文进行验证，不仅检验了密文的完整性和有效性，还隐式地实现了身份认证。
+
+\begin{algorithm}
+\caption{OW-ChCCA-KEM解封装算法}
+\label{alg:decap}
+\begin{algorithmic}[1]
+\Procedure{Decaps}{$sk, ct$}
+    \State 解析密文 $ct$ 为 $(c_0, c_1, \mathbf{x}, \hat{H}_0, \hat{H}_1)$
+    \State 从私钥 $sk$ 提取 $(\mathbf{Z}_b, b)$
+    \If{$b = 1$}
+        \State 选择 $\hat{H}_b \gets \hat{H}_1$ 和 $c_b \gets c_1$
+    \Else
+        \State 选择 $\hat{H}_b \gets \hat{H}_0$ 和 $c_b \gets c_0$
+    \EndIf
+    \State 计算 $\mathbf{Z}_b^T\mathbf{x}$
+    \State 计算差值 $\Delta \gets \hat{H}_b - \mathbf{Z}_b^T\mathbf{x}$
+    \State 对差值向量舍入获得 $h_b'$
+    \State 计算 $\hat{K}_b \gets H(\mathbf{x}, \hat{H}_b, h_b')[:{\lambda/8}]$
+    \State 恢复 $r \gets c_b \oplus \hat{K}_b$
+    \State 通过扩展函数计算 $(s', \rho', h_0', h_1') \gets G(r)$
+    \State 使用 $\rho'$ 重新采样 $\mathbf{e}'$ 并验证 $\mathbf{x} = \mathbf{A}^T\mathbf{s}' + \mathbf{e}'$
+    \State 验证 $\hat{H}_0 = \mathbf{u}_0^T\mathbf{s}' + h_0' \cdot \lfloor q/2 \rfloor$ 和 $\hat{H}_1 = \mathbf{u}_1^T\mathbf{s}' + h_1' \cdot \lfloor q/2 \rfloor$
+    \If{验证通过}
+        \State 应用密钥派生函数计算共享密钥 $K \gets \text{KDF}(r)$
+        \State \Return $K$
+    \Else
+        \State \Return $\perp$ (解封装失败)
+    \EndIf
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}

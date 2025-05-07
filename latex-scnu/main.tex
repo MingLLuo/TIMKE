@@ -1,0 +1,88 @@
+%!TEX program = xelatex
+\documentclass{main}
+\addbibresource{reference/ref.bib}  % 指定参考文献文件路径
+\captionsetup{font=large}  % 使用 small 字体
+
+\setmainfont{Times New Roman}
+\setlength{\headheight}{13pt}
+\usepackage{algpseudocode}
+\usepackage{algorithm}
+\usepackage{minted2}
+\usepackage{minted}
+\usepackage{tocloft}
+\captionsetup[listing]{name=代码}
+
+% 设置目录标题格式
+\renewcommand{\cfttoctitlefont}{\hfill\zihao{-2}\heiti}
+\renewcommand{\cftaftertoctitle}{\hfill}
+
+% 设置目录中的字体和行距
+\renewcommand{\cftpartfont}{\zihao{4}\heiti}
+\renewcommand{\cftsecfont}{\zihao{-4}\songti}
+\renewcommand{\cftsubsecfont}{\zihao{-4}\songti}
+\renewcommand{\cftsubsubsecfont}{\zihao{-4}\songti}
+
+% 设置页码数字的字体
+\renewcommand{\cftpartpagefont}{\zihao{4}\heiti}
+\renewcommand{\cftsecpagefont}{\zihao{-4}\songti}
+\renewcommand{\cftsubsecpagefont}{\zihao{-4}\songti}
+\renewcommand{\cftsubsubsecpagefont}{\zihao{-4}\songti}
+
+% 设置缩进
+\setlength{\cftpartindent}{0em}
+\setlength{\cftsecindent}{2em}
+\setlength{\cftsubsecindent}{4em}
+\setlength{\cftsubsubsecindent}{4em}
+
+% 设置章节号后的格式
+\renewcommand{\cftpartaftersnum}{}
+\renewcommand{\cftsecaftersnum}{\hspace{0.5em}}
+\renewcommand{\cftsubsecaftersnum}{\hspace{0.5em}}
+\renewcommand{\cftsubsubsecaftersnum}{\hspace{0.5em}}
+
+% 设置各级标题间距
+\setlength{\cftbeforesecskip}{0.5ex}
+\setlength{\cftbeforesubsecskip}{0.3ex}
+\setlength{\cftbeforesubsubsecskip}{0.2ex}
+% 设置目录行距为1.25倍
+\renewcommand{\baselinestretch}{1.25}
+% 定义目录标题
+\renewcommand{\contentsname}{\centerline{目 \quad 录}}
+
+% 调整目录层级显示
+\setcounter{tocdepth}{3}
+\setcounter{secnumdepth}{3}
+
+\begin{document}
+
+\input{cover/image} % 封面
+\begin{spacing}{1.5}
+% \input{state-auth/index} % 声明和授权 根据需要打印
+\input{doc/abstract/abstract-zh-CN} % 中文摘要
+\input{doc/abstract/abstract-en} % 英文摘要
+
+% 计算页码
+\setboolean{@twoside}{true}
+\zihao{-4}
+\setcounter{page}{1}
+
+% \addcontentsline{toc}{section}{目录}
+\tableofcontents
+\newpage
+% 在正文部分使用阿拉伯数字
+\pagenumbering{arabic} % 在摘要后、正文前添加
+\include{doc/introduction}
+\include{doc/prerequisite/content}
+\include{doc/owchcca/content}
+\include{doc/timke/content}
+\include{doc/performace/content}
+\include{doc/conclusion/content}
+\include{doc/reference}
+\include{doc/appendix/content} % 附录
+\input{thanks/index} % 致谢
+\end{spacing}
+
+% 结束计算页码
+\setboolean{@twoside}{false}
+
+\end{document}

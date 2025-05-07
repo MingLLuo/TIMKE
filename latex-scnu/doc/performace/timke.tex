@@ -1,0 +1,82 @@
+\subsection{TIMKE性能评估}
+
+本节对不同配置下的TIMKE协议进行性能评估，分析各核心组件对整体性能的影响，并探讨保持安全性下的优化策略，为实际部署决策提供参考。
+
+\subsubsection{评估方法}
+
+实现提供一套性能评估框架，对协议各组件及其组合进行系统测试，包括：1)组件级基准测试，重点评估各KEM实现的关键操作（密钥生成、封装和解封装）性能，识别潜在瓶颈；2)协议阶段评估，分别测量第一阶段（包含0-RTT）和第二阶段的执行时间与资源消耗；3)端到端性能分析，评估完整协议流程的时间效率、内存占用和通信开销，模拟真实应用场景。替代实现对比则测试不同KEM组合的性能差异，分析最佳配置方案。
+
+所有测试在统一的环境中进行，硬件平台为Apple M1 Pro (8核心CPU，16GB RAM)，操作系统为MacOS Sequoia 15，开发语言为Go 1.23.4。每项测试重复10次取平均值，消除随机波动。测试工具集成于协议代码库，确保测量的准确性与一致性，不同身份的参与方会占用同一设备不同的端口进行交互。
+重点测试两套KEM组合配置方案：1)理论构造配置使用OW-ChCCA KEM作为KEM\textsubscript{1}和ML-KEM作为KEM\textsubscript{2}，代表原始TIMKE协议设计；2)实用替代配置使用ML-KEM同时作为KEM\textsubscript{1}和KEM\textsubscript{2}，探索在当前技术条件下的最佳性能方案。
+
+\subsubsection{混合KEM实现性能分析}
+
+考虑到OW-ChCCA KEM的性能受限，首先评估折中方案：使用高度简化的OW-ChCCA变体（OWChCCA-mini）作为KEM\textsubscript{1}，结合ML-KEM作为KEM\textsubscript{2}。OWChCCA-mini使用极小矩阵维度（n=16, m=8192, $\lambda$=16）和高度优化的算法实现。该配置仅作为概念验证使用，不应在实际安全系统中部署，仅提供理论构造可行性的基准数据。
+
+\begin{table}[ht]
+\centering
+\caption{混合KEM实现的TIMKE协议性能（单位：毫秒）}
+\label{tab:timke-hybrid-perf}
+\begin{tabular}{|l|r|r|r|r|}
+\hline
+\textbf{KEM组合} & \textbf{阶段1} & \textbf{阶段2} & \textbf{总时间} & \textbf{内存(KB)} \\
+\hline
+OWChCCA-mini + ML-KEM-512    & 322.18  & 118.53  & 440.71  & 2,206,372   \\
+\hline
+OWChCCA-mini + ML-KEM-768    & 324.47  & 117.61  & 442.07  & 2,206,250   \\
+\hline
+OWChCCA-mini + ML-KEM-1024   & 374.76  & 127.47  & 502.23  & 2,204,554   \\
+\hline
+\end{tabular}
+\end{table}
+
+即使采用极度简化的OW-ChCCA变体，混合方案的性能仍然受到限制，不同配置总执行时间分别为440.71ms、442.07ms和502.23ms，在不稳定的网络环境下有更明显的延迟感知。第一阶段（使用OWChCCA-mini）执行时间占总时间的73\%至75\%，明确指出性能瓶颈所在。在高安全级别下更为明显，如OWChCCA-mini与ML-KEM-1024组合的配置中，第一阶段耗时达到374.76ms，几乎是第二阶段的3倍。所有混合配置均需要超过2GB的内存，远超移动设备和嵌入式系统的可用资源。较差的性能表现主要源于OWChCCA-mini中的矩阵运算，尽管较大程度的简化参数设置，但基本的LWE问题结构仍然导致过多的内存开销。
+
+数据表明，尽管混合KEM方案在理论上实现了TIMKE协议的设计目标，但其实际性能表现使其难以直接应用于对延迟敏感的现代通信系统。
+
+\subsubsection{ML-KEM替代实现性能分析}
+
+本小节将分析使用ML-KEM同时替代KEM\textsubscript{1}和KEM\textsubscript{2}的方案。这种配置在理论上可能不提供与原设计相同的紧致安全保证，但为评估TIMKE协议在实际环境中的可行性提供了参考。
+
+表\ref{tab:timke-mlkem-perf}展示了使用ML-KEM不同安全级别实现的TIMKE协议性能。
+
+\begin{table}[ht]
+\centering
+\caption{基于ML-KEM的TIMKE协议性能（单位：毫秒）}
+\label{tab:timke-mlkem-perf}
+\begin{tabular}{|l|r|r|r|r|}
+\hline
+\textbf{KEM组合} & \textbf{阶段1} & \textbf{阶段2} & \textbf{总时间} & \textbf{内存(KB)} \\
+\hline
+ML-KEM-512 + ML-KEM-512    & 0.10  & 0.07  & 0.17  & 26   \\
+\hline
+ML-KEM-768 + ML-KEM-768    & 0.15  & 0.10  & 0.25  & 40   \\
+\hline
+ML-KEM-1024 + ML-KEM-1024  & 0.21  & 0.14  & 0.35  & 59   \\
+\hline
+\end{tabular}
+\end{table}
+
+在统一测试基准下，基于ML-KEM的配置比混合KEM方案快约3000倍。即使是安全级别最高的ML-KEM-1024配置，总执行时间也仅为0.35毫秒，完全满足高性能网络应用的需求。如此大的差距主要因为ML-KEM高效的算法结构和实现上的优化。ML-KEM基于模格结构，能够利用数论变换（NTT）等方式加速计算，其参数设置也经过精心优化，在保持安全的同时最小化计算开销。
+
+内存使用方面，ML-KEM方案表现优秀。测试配置的内存消耗分别为26KB、40KB和59KB，比混合方案低4-5个数量级，使TIMKE协议能够在资源受限的环境中运行，如移动设备、物联网终端甚至某些嵌入式系统。低内存占用也意味着更低的能耗和更好的并发性能，对服务器端的部署尤为重要。
+
+通信开销方面，基于ML-KEM的配置表现出色。ClientHello消息大小约为2-3KB，ServerResponse约为1-2KB，总通信量控制在5KB以内。阶段时间分布也更加均衡，第一阶段和第二阶段分别占总时间的约60\%和40\%。平均的时间分布在保证了0-RTT数据传输的低延迟特性的同时，不为后续阶段引入较大的额外延迟。
+
+\paragraph{安全性降级影响分析}
+从安全模型角度，OW-ChCCA安全专为紧致安全多挑战多用户场景设计，其安全损失与用户数量$n$和会话数量$q_s$无关，安全规约损失为常数$\mathcal{O}(1)$。ML-KEM虽然提供了IND-CCA2安全，但在多用户环境下其安全损失会随用户数量增加，典型的安全损失为$\mathcal{O}(n \cdot q_s)$。
+对于小规模系统（如用户数$n < 10^3$，每用户会话数$q_s < 10^3$），ML-KEM配置下的安全性损失可接受，实际参数选择与理论安全级别差距可控；对于中等规模系统（如用户数$n \approx 10^6$，每用户会话数$q_s \approx 10^3$），安全损失达到$\mathcal{O}(10^9)$量级，需要增加密钥长度（约30比特）才能维持原有安全级别；对于大规模系统（如用户数$n > 10^8$，每用户会话数$q_s > 10^4$），安全损失将超过$\mathcal{O}(10^{12})$量级，安全参数增加需求可能使方案在计算和通信效率上不再具有实用性。
+
+使用ML-KEM替代OW-ChCCA KEM作为KEM\textsubscript{1}会对TIMKE协议的整体安全性产生影响，具体如下：
+
+\begin{enumerate}
+    \item \textbf{紧致安全性}：完全失去紧致安全保证，安全损失会随系统规模增长。
+    
+    \item \textbf{后量子安全性}：保持不变，ML-KEM本身具有抗量子计算攻击能力。
+    
+    \item \textbf{0-RTT安全性}：基本保持，但在大规模部署中，可能需要增加密钥长度以补偿安全损失。
+    
+    \item \textbf{弱前向安全性}：第二阶段的弱前向安全性基本保持，因为它主要依赖于KEM\textsubscript{2}的安全性。
+\end{enumerate}
+
+综合来看，ML-KEM替代方案在部署TIMKE协议的中小规模系统中可以接受，安全降级影响有限。大规模部署环境则需权衡效率与安全性，可能要求更高安全级别的参数以补偿紧致安全性的损失。

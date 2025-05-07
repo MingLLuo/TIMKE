@@ -1,0 +1,79 @@
+\subsection{协议流程与工作原理}
+
+TIMKE协议工作流程如图\ref{fig:protocol-flow}所示，分为三个主要阶段：预共享阶段、临时密钥协商与0-RTT传输阶段，以及主会话密钥建立阶段。
+
+\subsubsection{预共享阶段}
+在正式协议交互开始前，服务器需要预先生成长期密钥对并将公钥分发给客户端：
+
+\begin{enumerate}
+    \item 服务器S生成KEM\textsubscript{1}的密钥对：$(pk_S, sk_S) \leftarrow \text{KEM}_1.\text{Gen}(par)$
+    \item 服务器将公钥$pk_S$通过可信渠道或证书分发给客户端C
+\end{enumerate}
+
+这一阶段类似TLS协议中的证书预分发，确保客户端能够获取并验证服务器的公钥，预共享阶段的安全性依赖于公钥分发机制的安全性，如证书机构的可信度。
+
+\subsubsection{第一阶段：临时密钥协商与 0-RTT 传输}
+
+第一阶段的主要目标是快速建立初始会话密钥，支持0-RTT数据传输。该阶段的交互效率直接影响用户感知的连接延迟，具体流程如下：
+
+\begin{enumerate}
+    \item \textbf{客户端C}执行以下操作：
+    \begin{itemize}
+        \item 生成KEM\textsubscript{2}的临时密钥对：$(epk_C, esk_C) \leftarrow \text{KEM}_2.\text{Gen}(par)$
+        \item 使用服务器公钥封装共享密钥：$(C_1, K_1) \leftarrow \text{KEM}_1.\text{Encap}(pk_S)$
+        \item 派生临时会话密钥：$K_{tmp} := H_1(pk_S, C_1, K_1)$
+        \item 加密0-RTT数据：$C_{payload} \leftarrow \text{Enc}(K_{tmp}; M_{0-RTT})$
+        \item 发送消息$(epk_C, C_1, C_{payload})$给服务器S
+    \end{itemize}
+
+    \item \textbf{服务器S}收到消息后执行以下操作：
+    \begin{itemize}
+        \item 解封装得到共享密钥：$K_1 := \text{KEM}_1.\text{Decap}(sk_S, C_1)$
+        \item 派生相同的临时会话密钥：$K_{tmp} := H_1(pk_S, C_1, K_1)$
+        \item 解密0-RTT数据：$M_{0-RTT} := \text{Dec}(K_{tmp}, C_{payload})$
+    \end{itemize}
+\end{enumerate}
+
+第一阶段结束后，双方已经建立了临时会话密钥$K_{tmp}$，客户端能够在第一个往返时间内发送加密的应用数据，实现0-RTT特性。对需要立即发送数据的时延敏感场景（如Web页面加载、API调用）尤为重要，能减少用户感知的延迟。
+
+\subsubsection{第二阶段：主会话密钥建立}
+
+第二阶段的目标是建立更安全的主会话密钥，该密钥具有弱前向安全性。尽管第一阶段已经建立了安全通道，但第二阶段通过结合双方的密钥材料进一步增强安全性：
+\begin{enumerate}
+    \item \textbf{服务器S}继续执行以下操作：
+    \begin{itemize}
+        \item 使用客户端临时公钥封装共享密钥：$(C_2, K_2) \leftarrow \text{KEM}_2.\text{Encap}(epk_C)$
+        \item 派生主会话密钥：$K_{main} := H_2(pk_S, epk_C, C_1, C_2, K_1, K_2)$
+        \item 加密应用数据：$C'_{payload} \leftarrow \text{Enc}(K_{main}; M_1)$
+        \item 发送消息$(C_2, C'_{payload})$给客户端C
+    \end{itemize}
+
+    \item \textbf{客户端C}收到消息后执行以下操作：
+    \begin{itemize}
+        \item 使用临时私钥解封装共享密钥：$K_2 := \text{KEM}_2.\text{Decap}(esk_C, C_2)$
+        \item 派生相同的主会话密钥：$K_{main} := H_2(pk_S, epk_C, C_1, C_2, K_1, K_2)$
+        \item 解密服务器发送的数据：$M_1 := \text{Dec}(K_{main}, C'_{payload})$
+    \end{itemize}
+\end{enumerate}
+
+第二阶段结束后，双方建立了具有更强安全性的主会话密钥$K_{main}$，该密钥结合双方的共享密钥信息，具有Stage-2弱前向安全性。与第一阶段相比，即使服务器的长期密钥泄露，只要攻击者不主动干预通信过程，主会话密钥仍然安全，为长期会话提供额外的安全保障。
+
+\subsubsection{密钥派生机制}
+
+TIMKE协议的核心是两个密钥派生的步骤，分别用于生成临时会话密钥和主会话密钥，不仅确保密钥的唯一性和随机性，还进行了会话的上下文绑定，防止中间人攻击和会话混淆：
+
+\textbf{临时会话密钥派生.} 临时会话密钥通过以下公式计算：
+\begin{equation}
+K_{tmp} := H_1(pk_S, C_1, K_1)
+\end{equation}
+
+这一派生过程结合服务器公钥$pk_S$、封装密文$C_1$和共享密钥$K_1$三个关键元素，通过密码学哈希函数$H_1$导出临时会话密钥。确保只有持有正确服务器私钥$sk_S$的一方才能计算出相同的$K_{tmp}$，实现隐式身份认证。将服务器公钥包含在派生过程中可以防止中间人攻击，而封装密文的包含则确保了密钥的唯一性。
+
+\textbf{主会话密钥派生.} 主会话密钥通过以下更复杂的公式计算：
+\begin{equation}
+K_{main} := H_2(pk_S, epk_C, C_1, C_2, K_1, K_2)
+\end{equation}
+
+主会话密钥的派生结合了更全面的上下文信息，包括服务器公钥$pk_S$、客户端临时公钥$epk_C$、两个封装密文$C_1$和$C_2$，以及两个共享密钥$K_1$和$K_2$。主会话密钥的安全不仅依赖于服务器的长期密钥，还依赖于临时生成的密钥信息提供的弱前向安全性。即使服务器长期密钥泄露，攻击者仍需要获取临时密钥才能恢复主会话密钥。
+
+实现中两个哈希函数均使用SHA3-512，通过不同的域分隔符确保它们的输出相互独立，以防止不同上下文中使用相同哈希函数导致的安全问题。

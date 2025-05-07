@@ -1,0 +1,20 @@
+\setcounter{page}{1}
+\pagenumbering{Roman}
+\begin{center}
+  {\zihao{-2}\heiti\bfseries 一种多阶段密钥交换协议的设计与实现}
+  \\ \hspace*{\fill}
+  \\ \hspace*{\fill} \\
+  \addcontentsline{toc}{section}{\zihao{4} 摘\quad 要}
+  \zihao{-2} \bfseries 摘\quad 要
+\end{center}
+  \bigskip
+\begin{spacing}{1.5}  
+  \zihao{-4}
+  本文实现了一种基于密钥封装机制的紧致安全多阶段密钥交换（TIghtly secure Multi-stage Key Exchange，TIMKE）协议，基于后量子安全原语构建，现阶段能抵抗量子计算攻击，其“紧致安全”的特性确保协议安全性不随用户数量或会话数量增加而降低。TIMKE采用两阶段设计：第一阶段基于服务器长期密钥提供身份认证并支持零往返时间（Zero Round Trip Time, 0-RTT）数据传输；第二阶段结合临时密钥提供弱前向安全保障。
+  我们实现了基于格的单向可检测选择密文安全（One-Way Checkable security against Chosen-Ciphertext Attacks，OW-ChCCA）密钥封装机制，通过参数优化使其能在常规计算环境中运行，同时集成了基于模格的密钥封装机制（Module-Lattice based Key-Encapsulation Mechanism, ML-KEM）作为高性能替代方案。实现采用模块化架构，支持灵活组合不同密码原语，满足各种安全需求和性能约束。
+  实验结果表明，虽然OW-ChCCA KEM的实现在计算资源方面要求较高，但基于ML-KEM的TIMKE变体能在毫秒级时间内完成密钥交换，验证了该协议在实际环境中的可行性。
+\end{spacing}
+    \medskip
+  \zihao{-4}
+  {\heiti \bfseries 关键词:}\ \ 多阶段密钥交换协议；后量子安全；协议实例化
+\newpage

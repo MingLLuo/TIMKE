@@ -1,0 +1,211 @@
+\subsection{OW-ChCCA KEM 性能评估}
+
+本节对第\ref{chap:owchccakem}章实现的OW-ChCCA KEM进行详细的性能评估，重点分析其参数选择与实用性。论文\cite{pan_lattice-based_2023}提出的理论构造虽然提供严谨的安全证明，但其推荐参数设置与实际计算资源约束存在差距。
+
+\paragraph{密钥结构与参数}
+\label{chap:key-structure-params}
+实现的OW-ChCCA KEM基于格密码学构建，其密钥结构由精心设计的数学组件组成，共同构成了具备后量子安全保障的密钥封装机制。
+
+公钥$\mathrm{PK}$由三个主要矩阵组成：
+
+\begin{itemize}
+    \item \textbf{矩阵$\mathbf{A}$}：一个维度为$n \times m$的公共随机矩阵，其中$n$为格维度，$m$为样本数（通常$m \geq 2n\log q$）。矩阵$\mathbf{A}$作为整个密钥系统的公共参数，在有限域$\mathbb{Z}_q$上定义。
+    
+    \item \textbf{矩阵$\mathbf{u}_0$}：维度为$n \times \lambda$的矩阵，其中$\lambda$为安全参数。
+    
+    \item \textbf{矩阵$\mathbf{u}_1$}：与$\mathbf{u}_0$维度相同的$n \times \lambda$矩阵。
+\end{itemize}
+
+公钥的完整表示为：$\mathrm{PK} = (\mathbf{A}, \mathbf{u}_0, \mathbf{u}_1)$，所有矩阵元素均在模$q$上运算，其中$q$是一个素数模数，通常选择满足$n^6 < q \leq n^7$的值。
+
+私钥$\mathrm{SK}$包含以下组件：
+
+\begin{itemize}
+    \item \textbf{矩阵$\mathbf{Z}_b$}：维度为$m \times \lambda$的矩阵，从离散高斯分布$D_{\mathbb{Z}^{m \times \lambda}, \alpha}$中采样得到，其中$\alpha$为高斯分布参数（通常设置为$\alpha = \sqrt{n}$）。
+    
+    \item \textbf{比特标记$b$}：一个二进制值$b \in \{0,1\}$，决定了哪个矩阵$\mathbf{u}_b$包含真实数据。
+    
+    \item \textbf{公钥引用}：私钥中也包含对应的公钥信息，用于验证和操作。
+\end{itemize}
+
+私钥的完整表示为：$\mathrm{SK} = (\mathrm{PK}, \mathbf{Z}_b, b)$。
+
+密钥的构造使满足关键的安全属性：敌手无法确定哪个矩阵$\mathbf{u}_b$包含真实数据，而合法持有者通过私钥中的$b$值可以识别和使用正确的矩阵。
+
+\paragraph{封装与解封装操作}
+
+OW-ChCCA KEM的核心操作是密钥封装与解封装过程，两个过程协同工作，在不安全通道上安全建立共享密钥。
+
+在密钥封装过程中，发送方使用接收方的公钥$\mathrm{PK}$生成密文$\mathbf{c}$和共享密钥$K$。密文包含多个组成部分：LWE样本向量$\mathbf{x}$，两个检验值$\hat{H}_0$和$\hat{H}_1$，加密的密钥材料$c_0$和$c_1$。
+
+封装算法通过随机采样、矩阵运算和哈希组合，确保即使在密文被截获的情况下，未持有正确私钥的攻击者也无法恢复共享密钥。
+
+在解封装过程中，接收方利用私钥中的$b$值和$\mathbf{Z}_b$矩阵，计算$\hat{H}_b - \mathbf{Z}_b^T\mathbf{x}$以提取并验证共享密钥。允许接收方从两个可能的密钥材料中识别并恢复正确的共享密钥，同时提供隐式验证功能，确保密文的完整性和真实性。
+
+\subsubsection{理论参数的实用性挑战}
+
+论文\cite{pan_lattice-based_2023}在证明OW-ChCCA与LWE问题紧致安全关系时，引用了一系列关键引理，对参数设置提出了较大要求，基于理论约束，论文推荐了以下参数设置：
+
+\textbf{安全参数.} $\lambda$（决定整体安全强度）
+
+\textbf{矩阵维度.} $n = 70\lambda$, $m = 2n\log q$，$k = \lambda$
+
+\textbf{有限域.} 模数 $q$ 满足 $n^6 < q \leq n^7$，$6\log n< \log q \leq 7\log n$，且$q$为素数
+
+\textbf{高斯分布参数.} $\alpha = \eta = \gamma = \sqrt{n}$，$\alpha' = n^{2.5}m$
+
+上述参数主要服务于理论证明，在实际实现中会导致较大的矩阵维度和模数。例如，即使取最小安全级别 $\lambda = 16$，也会产生 $n = 1120$ 的矩阵维度，导致以下问题：
+
+1. \textbf{存储开销较大}：代入安全参数$\lambda$，矩阵 $A$ 元素数随着安全级别的提高迅速增长
+
+2. \textbf{计算复杂度高}：涉及大维度矩阵乘法，即使采用并行计算也需要相当的计算资源
+
+3. \textbf{通信负担重}：密钥和密文长度较大，在带宽受限环境中使用受限
+
+表\ref{tab:theoretical-params}展示了不同安全级别下理论参数的计算结果，清晰地说明了这些参数在实际应用中面临的挑战。
+
+\begin{table}[ht]
+  \centering
+  \caption{理论参数下的计算结果与存储需求}
+  \label{tab:theoretical-params}
+  \begin{tabular}{|c|c|c|c|c|c|}
+  \hline
+  \textbf{安全级别} & \textbf{矩阵维度} & \textbf{模数位数} & \textbf{样本数} & \textbf{矩阵A元素数} & \textbf{矩阵A存储需求} \\
+  $\lambda$ & $n = 70\lambda$ & $\log q \approx 6\log n$ & $m = 2n\log q$ & $n \times m$ & (GB) \\
+  \hline
+  16 & 1,120 & 61位 & 136,147 & 152,484,640 & 1.16 \\
+  \hline
+  32 & 2,240 & 67位 & 299,750 & 671,440,000 & 5.6 \\
+  \hline
+  64 & 4,480 & 73位 & 652,099 & 2,921,403,520 & 26.6 \\
+  \hline
+  128 & 8,960 & 79位 & 1,411,718 & 12,648,993,280 & 124.5 \\
+  \hline
+  256 & 17,920 & 85位 & 3,037,766 & 54,436,766,720 & 577.5 \\
+  \hline
+  \end{tabular}
+\end{table}
+
+从表中可以看出，随着安全级别的提高，存储需求迅速增长。在低安全级别($\lambda = 16$)下，存储需求尚在普通计算设备的能力范围内。但当安全级别提高到256位时，存储需求达到约577.5 GB，对于普通设备而言尚为可观，但对内存受限的环境如移动设备或嵌入式系统则完全超出了可行范围。此外，大维度矩阵的运算（特别是矩阵乘法）需要大量计算资源。例如，在$\lambda = 64$的情况下，计算$AZ_b$（尺寸分别为$4480 \times 652099$和$652099 \times 64$）涉及大量乘加运算，对计算资源提出较高要求。实际应用中必须考虑计算资源和存储限制，虽然这组参数在理论上能提供 OW-ChCCA 安全，但不能在普通计算设备上正常执行。
+
+\subsubsection{优化参数调整策略}
+
+为实现概念验证并提供可行的测试环境，测试对OW-ChCCA KEM参数进行调整，在保持基本结构的同时，降低了计算和存储需求，使系统能在常规计算设备上运行，如表\ref{tab:practical-params}所示。主要参数优化包括：将$n$从$70\lambda$减少到$8\lambda$，大幅降低了矩阵规模和计算复杂度。采用$m = 6n\log n$至$7n\log n$的范围，相比理论方案的$m \approx 12n\log n$至$14n\log n$减少了样本数。使用固定位数的模数，避免安全级别增加时模数位数迅速增长。
+
+\begin{table}[ht]
+  \centering
+  \caption{调整后的OW-ChCCA KEM参数与矩阵 A}
+  \label{tab:practical-params}
+  \begin{tabular}{|c|c|c|c|c|c|}
+  \hline
+  \textbf{安全级别} & \textbf{矩阵维度} & \textbf{模数位数} & \textbf{样本数} & \textbf{矩阵A元素数} & \textbf{矩阵A存储需求} \\
+  $\lambda$ & $n = 8\lambda$ & $\log q \approx 60$位 & $m$ & $n \times m$ & (MB) \\
+  \hline
+  16 & 128 & 60位 & 8,192 & 1,048,576 & 7.5  \\
+  \hline
+  32 & 256 & 61位 & 16,384 & 4,194,304 & 30.5 \\
+  \hline
+  64 & 512 & 62位 & 32,768 & 16,777,216 & 124 \\
+  \hline
+  128 & 1,024 & 62位 & 131,072 & 134,217,728 & 996 \\
+  \hline
+  \end{tabular}
+\end{table}
+
+对比表\ref{tab:theoretical-params}与表\ref{tab:practical-params}，可以看出参数调整使得存储需求降低了数个数量级。例如，对于安全级别$\lambda=64$的情况，矩阵$A$的存储需求从原理论值的约26.6GB大幅降低到约31 MB，在普通计算机上能正常执行。
+
+现实中的安全参数大于 64 bit，为展示并进行测试分析，选择将 16 / 32 / 64 bit安全纳入性能测试的范围，在现实中使用较低的安全参数是不安全的！这些参数调整主要用于概念验证和性能评估，不应在关键安全系统中直接使用。实际应用中应采用至少128位安全级别的参数设置，并需要重新评估安全性。实验选择较低安全级别（16/32/64位）用于构建性能模型并进行比较分析。
+
+\subsubsection{与标准 KEM 的性能对比}
+\label{subsec:comp-mlkem}
+为全面评估OW-ChCCA KEM的实用性，我们将优化后的实现与NIST后量子标准ML-KEM进行了系统性能对比。
+
+测试环境为：
+\begin{itemize}
+  \item \textbf{硬件平台}：Apple M1 Pro (8核心CPU，16GB RAM)
+  \item \textbf{编程语言}：Go 1.23.4
+  \item \textbf{测试重复次数}：每项测试重复20次取平均值
+\end{itemize}
+
+表 \ref{tab:kem-time-perf}、表 \ref{tab:kem-mem-usage} 和表 \ref{tab:kem-sizes} 分别展示了时间性能、内存使用和密钥/密文大小的比较结果。
+
+\begin{table}[ht]
+\centering
+\caption{KEM 时间性能对比（单位：微秒）}
+\begin{tabular}{|l|r|r|r|}
+\hline
+\textbf{算法} & \textbf{密钥生成} & \textbf{封装} & \textbf{解封装} \\
+\hline
+ML-KEM-512    & 45                & 28            & 42              \\
+ML-KEM-768    & 71                & 39            & 58              \\
+ML-KEM-1024   & 133               & 62            & 77              \\
+\hline
+OWChCCA-16    & 758,156           & 98,458        & 109,047         \\
+OWChCCA-32    & 5,863,826         & 405,601       & 455,834         \\
+OWChCCA-64    & 49,433,152        & 3,234,471     & 3,320,898       \\
+\hline
+\end{tabular}
+\label{tab:kem-time-perf}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\caption{KEM 内存使用对比（单位：KB）}
+\begin{tabular}{|l|r|r|r|}
+\hline
+\textbf{算法} & \textbf{密钥生成} & \textbf{封装} & \textbf{解封装} \\
+\hline
+ML-KEM-512    & 26                & 4             & $<1$            \\
+ML-KEM-768    & 48                & 6             & $<1$            \\
+ML-KEM-1024   & 77                & 10            & $<1$            \\
+\hline
+OWChCCA-16    & 10,179,171        & 963,722       & 1,087,009       \\
+OWChCCA-32    & 76,704,741        & 3,769,073     & 4,251,144       \\
+OWChCCA-64    & 595,260,139       & 16,138,943    & 18,183,155      \\
+\hline
+\end{tabular}
+\label{tab:kem-mem-usage}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\caption{KEM 密钥与密文大小对比（单位：字节）}
+\begin{tabular}{|l|r|r|r|}
+\hline
+\textbf{算法} & \textbf{公钥大小} & \textbf{密文大小} & \textbf{共享密钥大小} \\
+\hline
+ML-KEM-512    & 800               & 768              & 32                   \\
+ML-KEM-768    & 1,184             & 1,088            & 32                   \\
+ML-KEM-1024   & 1,568             & 1,568            & 32                   \\
+\hline
+OWChCCA-16    & 8,421,400         & 65,808           & 2                    \\
+OWChCCA-32    & 33,685,528        & 131,604          & 4                    \\
+OWChCCA-64    & 134,742,040       & 263,196          & 8                    \\
+\hline
+\end{tabular}
+\label{tab:kem-sizes}
+\end{table}
+
+测试结果表明，尽管对参数进行了大幅优化，但当前实现的OW-ChCCA KEM在性能方面仍远远落后于ML-KEM：
+
+\begin{enumerate}
+    \item \textbf{时间性能差距}：OW-ChCCA 的各项操作耗时比 ML-KEM 高 3-6 个数量级。即使是最低安全级别的 OWChCCA-16，其密钥生成时间也比 ML-KEM-1024 慢约 5,700 倍，封装和解封装操作分别慢约 1,600 倍和 1,400 倍。
+    
+    \item \textbf{内存占用差距}：OW-ChCCA 的内存需求极其庞大，尤其是在密钥生成阶段。OWChCCA-64 的密钥生成使用了 595GB 的内存，超出了大多数消费级计算设备的容量。
+    
+    \item \textbf{密钥与密文大小}：OW-ChCCA 的公钥和密文尺寸远大于 ML-KEM，OWChCCA-16 的公钥（约 8MB）比 ML-KEM-1024 的公钥（约 1.5KB）大约 5,370 倍。
+\end{enumerate}
+
+性能差异的主要原因在于：
+
+\begin{enumerate}
+    \item \textbf{代数结构差异}：ML-KEM基于环格结构，可利用NTT等技术加速计算；而OW-ChCCA基于标准LWE问题，使用大型稠密矩阵运算，缺乏类似的高效优化路径。
+    
+    \item \textbf{底层问题复杂度}：OW-ChCCA依赖于一般格上的LWE问题难度，其安全性要求更大的参数；而ML-KEM基于模格（Module Lattice）结构，在保持安全性的同时允许更小的参数。
+    
+    \item \textbf{算法优化成熟度}：ML-KEM经过多年多轮优化，包括算法级和实现级的精细调整；相比之下，OW-ChCCA是较新的构造，尚未经历同等程度的优化。
+    
+    \item \textbf{理论设计约束}：OW-ChCCA为满足紧致安全性证明需求，采用了较为保守的参数设置和算法结构，在理论上增强了安全性，但影响了实际性能。
+\end{enumerate}
+
+实验结果展示，尽管OW-ChCCA KEM在理论上具有重要价值，但在实际性能方面存在局限性，难以直接应用于实际系统。
