@@ -1,6 +1,7 @@
 package kem
 
 import (
+	"bufio"
 	"crypto/rand"
 	"fmt"
 	"os"
@@ -40,6 +41,9 @@ func DefaultBenchmarkOptions() BenchmarkOptions {
 
 func RunBenchmarks(options BenchmarkOptions) ([]BenchmarkResult, error) {
 	var results []BenchmarkResult
+	if options.Iterations <= 0 {
+		return nil, fmt.Errorf("iterations must be > 0")
+	}
 
 	kemNames := options.KEMNames
 	if len(kemNames) == 0 {
@@ -118,6 +122,10 @@ func benchmarkKeyGen(kem KEM, kemName string, iterations int) (BenchmarkResult, 
 		Operation:  "KeyGen",
 		Iterations: iterations,
 	}
+	if iterations <= 0 {
+		return result, fmt.Errorf("iterations must be > 0")
+	}
+	params := kem.Setup()
 
 	// Run garbage collection before measuring
 	runtime.GC()
@@ -130,12 +138,12 @@ func benchmarkKeyGen(kem KEM, kemName string, iterations int) (BenchmarkResult, 
 	var err error
 
 	// Warm-up run
-	_, _, _ = kem.GenerateKeyPair(kem.Setup(), rand.Reader)
+	_, _, _ = kem.GenerateKeyPair(params, rand.Reader)
 
 	// Benchmark
 	startTime := time.Now()
 	for i := 0; i < iterations; i++ {
-		pk, _, err = kem.GenerateKeyPair(kem.Setup(), rand.Reader)
+		pk, _, err = kem.GenerateKeyPair(params, rand.Reader)
 		if err != nil {
 			return result, fmt.Errorf("key generation failed: %w", err)
 		}
@@ -146,7 +154,7 @@ func benchmarkKeyGen(kem KEM, kemName string, iterations int) (BenchmarkResult, 
 
 	// Calculate results
 	result.AvgTime = elapsed / time.Duration(iterations)
-	result.MemoryUsage = (memStatsAfter.TotalAlloc - memStatsBefore.TotalAlloc) / 1024 // Convert to KB
+	result.MemoryUsage = ((memStatsAfter.TotalAlloc - memStatsBefore.TotalAlloc) / 1024) / uint64(iterations)
 
 	// Get key sizes
 	if pk != nil {
@@ -162,6 +170,9 @@ func benchmarkEncap(kem KEM, pk PublicKey, kemName string, iterations int) (Benc
 		Algorithm:  kemName,
 		Operation:  "Encap",
 		Iterations: iterations,
+	}
+	if iterations <= 0 {
+		return result, fmt.Errorf("iterations must be > 0")
 	}
 
 	// Run garbage collection before measuring
@@ -190,7 +201,7 @@ func benchmarkEncap(kem KEM, pk PublicKey, kemName string, iterations int) (Benc
 
 	// Calculate results
 	result.AvgTime = elapsed / time.Duration(iterations)
-	result.MemoryUsage = (memStatsAfter.TotalAlloc - memStatsBefore.TotalAlloc) / 1024 // Convert to KB
+	result.MemoryUsage = ((memStatsAfter.TotalAlloc - memStatsBefore.TotalAlloc) / 1024) / uint64(iterations)
 
 	// Get sizes
 	if ct != nil {
@@ -209,6 +220,9 @@ func benchmarkDecap(kem KEM, sk PrivateKey, ct []byte, kemName string, iteration
 		Algorithm:  kemName,
 		Operation:  "Decap",
 		Iterations: iterations,
+	}
+	if iterations <= 0 {
+		return result, fmt.Errorf("iterations must be > 0")
 	}
 
 	// Run garbage collection before measuring
@@ -237,7 +251,7 @@ func benchmarkDecap(kem KEM, sk PrivateKey, ct []byte, kemName string, iteration
 
 	// Calculate results
 	result.AvgTime = elapsed / time.Duration(iterations)
-	result.MemoryUsage = (memStatsAfter.TotalAlloc - memStatsBefore.TotalAlloc) / 1024 // Convert to KB
+	result.MemoryUsage = ((memStatsAfter.TotalAlloc - memStatsBefore.TotalAlloc) / 1024) / uint64(iterations)
 
 	// Get size
 	if ss != nil {
@@ -357,10 +371,12 @@ func writeResultsToCSV(results []BenchmarkResult, filename string) error {
 		return err
 	}
 	defer file.Close()
+	writer := bufio.NewWriter(file)
+	defer writer.Flush()
 
 	// Write header
 	header := "Algorithm,Operation,AvgTime(μs),Iterations,MemoryUsage(KB),KeySize,CiphertextSize,SharedKeySize\n"
-	if _, err := file.WriteString(header); err != nil {
+	if _, err := writer.WriteString(header); err != nil {
 		return err
 	}
 
@@ -376,7 +392,7 @@ func writeResultsToCSV(results []BenchmarkResult, filename string) error {
 			result.CiphertextSize,
 			result.SharedKeySize)
 
-		if _, err := file.WriteString(line); err != nil {
+		if _, err := writer.WriteString(line); err != nil {
 			return err
 		}
 	}

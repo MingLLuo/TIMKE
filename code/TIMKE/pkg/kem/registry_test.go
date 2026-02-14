@@ -10,9 +10,12 @@ func TestKEMRegistry(t *testing.T) {
 	t.Run("ListKEMs should return all registered KEMs", func(t *testing.T) {
 		kems := ListKEMs()
 		expected := []string{
+			"OWChCCA-16",
 			"OWChCCA-32",
+			"OWChCCA-64",
+			"ML-KEM-512",
 			"ML-KEM-768",
-			"Kyber768",
+			"ML-KEM-1024",
 		}
 
 		sort.Strings(kems)

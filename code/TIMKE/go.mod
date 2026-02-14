@@ -3,7 +3,7 @@ module TIMKE
 go 1.24.0
 
 require (
-	github.com/MingLLuo/OW-ChCCA-KEM v0.0.0-20250304163826-2359218bb18a
+	github.com/MingLLuo/OW-ChCCA-KEM v0.0.0-20260214165445-6c4cddcce49e
 	github.com/cloudflare/circl v1.6.0
 )
 

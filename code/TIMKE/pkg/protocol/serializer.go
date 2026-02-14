@@ -3,7 +3,6 @@ package protocol
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 )
 
 var (
@@ -48,7 +47,7 @@ func readLengthPrefixedBytes(data []byte, offset int) ([]byte, int, error) {
 	}
 
 	// Read the length
-	length := binary.BigEndian.Uint32(data[offset:])
+	length := binary.BigEndian.Uint32(data[offset : offset+4])
 	offset += 4
 
 	// Check if we can read the data
@@ -66,12 +65,10 @@ func readLengthPrefixedBytes(data []byte, offset int) ([]byte, int, error) {
 
 // writeLengthPrefixedBytes appends a length-prefixed byte array to the result
 func writeLengthPrefixedBytes(result []byte, data []byte) []byte {
-	// Allocate a 4-byte buffer for the length
-	lengthBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(lengthBytes, uint32(len(data)))
-
-	// Append length and data
-	result = append(result, lengthBytes...)
+	// Reserve 4 bytes in-place for length to avoid a tiny temporary allocation.
+	lengthOffset := len(result)
+	result = append(result, 0, 0, 0, 0)
+	binary.BigEndian.PutUint32(result[lengthOffset:lengthOffset+4], uint32(len(data)))
 	result = append(result, data...)
 
 	return result
@@ -87,8 +84,8 @@ func (s *DefaultSerializer) MarshalClientHello(ch *ClientHello) ([]byte, error) 
 	estimatedSize := 4 + len(ch.EphemeralPublicKey) +
 		4 + len(ch.Ciphertext1) +
 		4 + len(ch.EncryptedPayload) +
-		4 + len([]byte(ch.KEM1Type)) +
-		4 + len([]byte(ch.KEM2Type))
+		4 + len(ch.KEM1Type) +
+		4 + len(ch.KEM2Type)
 
 	result := make([]byte, 0, estimatedSize)
 
@@ -97,18 +94,13 @@ func (s *DefaultSerializer) MarshalClientHello(ch *ClientHello) ([]byte, error) 
 	result = writeLengthPrefixedBytes(result, ch.EncryptedPayload)
 	result = writeLengthPrefixedBytes(result, []byte(ch.KEM1Type))
 	result = writeLengthPrefixedBytes(result, []byte(ch.KEM2Type))
-	fmt.Print("len EphPubKey: ", len(ch.EphemeralPublicKey), "\n")
-	fmt.Print("len Ciphertext1: ", len(ch.Ciphertext1), "\n")
-	fmt.Print("len EncryptedPayload: ", len(ch.EncryptedPayload), "\n")
-	fmt.Print("len KEM1Type: ", len([]byte(ch.KEM1Type)), "\n")
-	fmt.Print("len KEM2Type: ", len([]byte(ch.KEM2Type)), "\n")
 
 	return result, nil
 }
 
 // UnmarshalClientHello deserializes a byte slice into a ClientHello
 func (s *DefaultSerializer) UnmarshalClientHello(data []byte) (*ClientHello, error) {
-	if len(data) < 2 {
+	if len(data) < 4 {
 		return nil, ErrInvalidMessage
 	}
 
@@ -159,7 +151,7 @@ func (s *DefaultSerializer) MarshalServerResponse(sr *ServerResponse) ([]byte, e
 	}
 
 	// Pre-allocate a reasonable buffer
-	estimatedSize := 2 + len(sr.Ciphertext2) + 2 + len(sr.EncryptedPayload)
+	estimatedSize := 4 + len(sr.Ciphertext2) + 4 + len(sr.EncryptedPayload)
 	result := make([]byte, 0, estimatedSize)
 
 	result = writeLengthPrefixedBytes(result, sr.Ciphertext2)
@@ -170,7 +162,7 @@ func (s *DefaultSerializer) MarshalServerResponse(sr *ServerResponse) ([]byte, e
 
 // UnmarshalServerResponse deserializes a byte slice into a ServerResponse
 func (s *DefaultSerializer) UnmarshalServerResponse(data []byte) (*ServerResponse, error) {
-	if len(data) < 2 {
+	if len(data) < 4 {
 		return nil, ErrInvalidMessage
 	}
 

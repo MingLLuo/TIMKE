@@ -1,7 +1,10 @@
 package protocol
 
 import (
+	"TIMKE/pkg/crypto"
 	"TIMKE/pkg/kem"
+	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"runtime"
@@ -64,7 +67,7 @@ func RunProtocolBenchmark(options BenchmarkOptions) ([]BenchmarkResult, error) {
 			fmt.Printf("Testing %s (%d iterations)...\n", tc.Name, tc.Iters)
 		}
 
-		result, err := runSingleTest(tc, options.ZeroRTTPayload, options.Verbose)
+		result, err := runSingleTest(tc, options.ZeroRTTPayload)
 		if err != nil {
 			fmt.Printf("Error testing %s: %v\n", tc.Name, err)
 			continue
@@ -92,9 +95,12 @@ func RunProtocolBenchmark(options BenchmarkOptions) ([]BenchmarkResult, error) {
 	return results, nil
 }
 
-func runSingleTest(tc TestCase, zeroRTTPayload []byte, verbose bool) (BenchmarkResult, error) {
+func runSingleTest(tc TestCase, zeroRTTPayload []byte) (BenchmarkResult, error) {
 	result := BenchmarkResult{
 		TestCase: tc,
+	}
+	if tc.Iters <= 0 {
+		return result, fmt.Errorf("iterations must be > 0")
 	}
 
 	kem1, err := kem.GetKEM(tc.KEM1)
@@ -110,21 +116,21 @@ func runSingleTest(tc TestCase, zeroRTTPayload []byte, verbose bool) (BenchmarkR
 	config := &Config{
 		KEM1:                kem1,
 		KEM2:                kem2,
-		SymmetricEncryption: DefaultConfig().SymmetricEncryption,
+		SymmetricEncryption: crypto.DefaultSymmetricEncryption(),
 	}
+	kem1Params := kem1.Setup()
+	serverPayload := []byte("Hello from TIMKE server! This is stage-2 protected data.")
 
 	var totalPhase1 time.Duration
 	var totalPhase2 time.Duration
-	var totalMem uint64
 	keySize := 0
 
+	runtime.GC()
+	var memStatsBefore, memStatsAfter runtime.MemStats
+	runtime.ReadMemStats(&memStatsBefore)
+
 	for i := 0; i < tc.Iters; i++ {
-		runtime.GC()
-
-		var memStatsBefore, memStatsAfter runtime.MemStats
-		runtime.ReadMemStats(&memStatsBefore)
-
-		serverPubKey, serverPrivKey, err := kem1.GenerateKeyPair(kem1.Setup(), nil)
+		serverPubKey, serverPrivKey, err := kem1.GenerateKeyPair(kem1Params, nil)
 		if err != nil {
 			return result, fmt.Errorf("failed to generate server key pair: %v", err)
 		}
@@ -159,7 +165,6 @@ func runSingleTest(tc TestCase, zeroRTTPayload []byte, verbose bool) (BenchmarkR
 		}
 
 		startPhase2 := time.Now()
-		serverPayload := []byte("Hello from TIMKE server! This is stage-2 protected data.")
 		serverResponse, err := server.GenerateServerResponse(serverPayload)
 		if err != nil {
 			return result, fmt.Errorf("failed to generate server response: %v", err)
@@ -172,23 +177,20 @@ func runSingleTest(tc TestCase, zeroRTTPayload []byte, verbose bool) (BenchmarkR
 		phase2Time := time.Since(startPhase2)
 		totalPhase2 += phase2Time
 
-		if len(zeroRTTData) == 0 || string(zeroRTTData) != string(zeroRTTPayload) {
+		if !bytes.Equal(zeroRTTData, zeroRTTPayload) {
 			return result, fmt.Errorf("0-RTT data mismatch")
 		}
 
-		if len(serverData) == 0 || string(serverData) != string(serverPayload) {
+		if !bytes.Equal(serverData, serverPayload) {
 			return result, fmt.Errorf("server data mismatch")
 		}
-
-		runtime.ReadMemStats(&memStatsAfter)
-		memUsage := (memStatsAfter.TotalAlloc - memStatsBefore.TotalAlloc) / 1024
-		totalMem += memUsage
 	}
+	runtime.ReadMemStats(&memStatsAfter)
 
 	result.Phase1Time = totalPhase1 / time.Duration(tc.Iters)
 	result.Phase2Time = totalPhase2 / time.Duration(tc.Iters)
 	result.TotalTime = result.Phase1Time + result.Phase2Time
-	result.MemoryUsageKB = totalMem / uint64(tc.Iters)
+	result.MemoryUsageKB = ((memStatsAfter.TotalAlloc - memStatsBefore.TotalAlloc) / 1024) / uint64(tc.Iters)
 	result.KeySizeBytes = keySize
 	result.PayloadSizeRTT = len(zeroRTTPayload)
 
@@ -228,9 +230,11 @@ func writeResultsToCSV(results []BenchmarkResult, filename string) error {
 		return err
 	}
 	defer file.Close()
+	writer := bufio.NewWriter(file)
+	defer writer.Flush()
 
 	header := "KEM Combination,Phase 1 (ms),Phase 2 (ms),Total (ms),Memory (KB),Key Size (bytes),Iterations\n"
-	if _, err := file.WriteString(header); err != nil {
+	if _, err := writer.WriteString(header); err != nil {
 		return err
 	}
 
@@ -244,7 +248,7 @@ func writeResultsToCSV(results []BenchmarkResult, filename string) error {
 			result.KeySizeBytes,
 			result.TestCase.Iters)
 
-		if _, err := file.WriteString(line); err != nil {
+		if _, err := writer.WriteString(line); err != nil {
 			return err
 		}
 	}
